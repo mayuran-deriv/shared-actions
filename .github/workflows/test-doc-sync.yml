@@ -3,14 +3,20 @@ name: Test Doc Sync Agent
 on:
   push:
     branches:
-      - master
-      - main
+      - tester  # Test branch for workflow testing
+  pull_request:
+    branches:
+      - tester
+    types:
+      - closed  # Triggers when PR is merged to tester
   workflow_dispatch:  # Allows manual triggering for testing
 
 jobs:
   test-doc-sync:
     name: Test Documentation Sync
     runs-on: ubuntu-latest
+    # Only run on push OR when PR is merged (not just closed)
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
 
     permissions:
       contents: write
@@ -19,6 +25,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: tester  # Always checkout tester branch
+          fetch-depth: 50
 
       - name: Run Doc Sync Agent
         uses: ./.github/actions/doc_sync_agent  # Uses local version
@@ -29,4 +38,4 @@ jobs:
           slack_users_to_tag: ${{ secrets.SLACK_USERS_TO_TAG }}  # Optional
           repository: ${{ github.repository }}
           commit_sha: ${{ github.sha }}
-          base_branch: ${{ github.ref_name }}
+          base_branch: tester  # Documentation PRs will target tester branch

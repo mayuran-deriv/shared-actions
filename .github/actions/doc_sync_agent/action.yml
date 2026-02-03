@@ -23,9 +23,9 @@ inputs:
     description: 'Commit SHA that triggered this workflow'
     required: true
   base_branch:
-    description: 'Base branch name (main or master)'
+    description: 'Base branch name (main or test)'
     required: false
-    default: 'master'
+    default: 'test'
   docs_to_check:
     description: 'Comma-separated list of documentation files to check'
     required: false

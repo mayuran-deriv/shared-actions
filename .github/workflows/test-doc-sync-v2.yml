@@ -28,6 +28,7 @@ jobs:
         with:
           ref: master  # Always checkout master branch
           fetch-depth: 50
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run Doc Sync Agent v2
         id: doc-sync

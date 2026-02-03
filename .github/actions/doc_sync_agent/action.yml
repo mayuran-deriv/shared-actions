@@ -234,7 +234,14 @@ runs:
 
         Your role is to analyze code changes and determine if project documentation needs to be updated. You make intelligent decisions about what warrants documentation updates and generate high-quality content when needed.
 
-        CRITICAL GUIDANCE:
+        CRITICAL GUIDANCE FOR NEW DOCUMENTATION FILES:
+        - When creating a documentation file that DOES NOT EXIST, you MUST document the ENTIRE repository
+        - The recent code changes are just the TRIGGER - do NOT limit documentation to only what changed
+        - Use the repository context to identify ALL applications, GitHub Actions, tools, and features
+        - Create comprehensive documentation covering everything in the repository
+        - Think of it as: 'This PR reminded us we need docs, so let's document the whole project'
+
+        CRITICAL GUIDANCE FOR EXISTING DOCUMENTATION FILES:
         1. Be PROACTIVE about documenting significant new additions:
            - New applications, projects, or major features added to the repository
            - New directories containing standalone applications (even if not previously documented)
@@ -297,10 +304,16 @@ runs:
         3. If yes to either, generate the COMPLETE updated content (not diffs)
 
         CRITICAL FOR NEW FILES:
-        - When creating a NEW documentation file (that doesn't currently exist), use the FULL repository context provided above
-        - Do NOT just document the recent changes - document the ENTIRE project comprehensively
-        - Include all existing applications, GitHub Actions, tools, and features found in the repository context
-        - The goal is to create complete, comprehensive documentation, not just document what changed
+        - When creating a NEW documentation file (that doesn't currently exist), IGNORE the recent diff and focus on the FULL repository context
+        - The recent changes are just the TRIGGER for creating docs - they are NOT the only content to document
+        - Document the ENTIRE repository: all applications, all GitHub Actions, all tools, all features
+        - Look at the repository structure and package information to understand what projects exist
+        - For example, if you see a "calculator-app" or "weather-app" folder in the repository context, document it
+        - The goal is comprehensive documentation of the ENTIRE project, not just documenting what changed in this PR
+
+        CRITICAL FOR EXISTING FILES:
+        - When UPDATING an existing documentation file, focus on the sections affected by recent changes
+        - Preserve all existing content and only modify/add relevant sections
 
         IMPORTANT: The absence of prior documentation is NOT a reason to skip documenting significant new additions. If a new application or major feature is added, ADD it to the documentation.
 
@@ -318,7 +331,12 @@ runs:
         - BE PROACTIVE: Add documentation for new significant projects, applications, or features (even if not previously documented)
         - BE CONSERVATIVE: Skip documentation updates for minor changes and internal refactoring
         - PROACTIVE SCENARIOS: New app directories, complete rewrites, major feature additions, new tools/utilities
-        - **FOR NEW FILES**: When creating documentation from scratch, use the repository context to document the ENTIRE project, not just recent changes
+        - **FOR NEW FILES**: When creating documentation from scratch, document EVERYTHING in the repository:
+          * Look at repository structure - if you see folders like 'calculator-app', 'weather-app', document them
+          * Look at package.json files - document all applications found
+          * Look at GitHub Actions - document all actions available
+          * Recent changes are the TRIGGER, not the SCOPE of documentation
+          * Example: If PR changes doc_sync_agent prompts, but CLAUDE.md doesn't exist, create CLAUDE.md documenting ALL GitHub Actions and ALL apps, not just doc_sync_agent
         - **FOR EXISTING FILES**: Update only the relevant sections affected by the changes
         - Preserve existing formatting style and structure exactly
         - Generate complete file content, not partial updates or diffs

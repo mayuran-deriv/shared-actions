@@ -1,0 +1,55 @@
+name: Test Doc Sync Agent v2
+
+on:
+  push:
+    branches:
+      - master  # Triggers on push to master
+  pull_request:
+    branches:
+      - master
+    types:
+      - closed  # Triggers when PR is merged to master
+  workflow_dispatch:  # Allows manual triggering for testing
+
+jobs:
+  test-doc-sync-v2:
+    name: Test Documentation Sync v2
+    runs-on: ubuntu-latest
+    # Only run on push OR when PR is merged (not just closed)
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: master  # Always checkout master branch
+          fetch-depth: 50
+
+      - name: Run Doc Sync Agent v2
+        id: doc-sync
+        uses: ./.github/actions/doc_sync_agent_v2  # Uses local v2 version
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_DOCSYNC }}
+          slack_users_to_tag: ${{ secrets.SLACK_USERS_TO_TAG }}  # Optional
+          repository: ${{ github.repository }}
+          commit_sha: ${{ github.sha }}
+          base_branch: master  # Documentation PRs will target master branch
+
+      - name: Display Results
+        if: always()
+        run: |
+          echo "========================================="
+          echo "WORKFLOW RESULTS"
+          echo "========================================="
+          echo "PR Created: ${{ steps.doc-sync.outputs.pr_created }}"
+          echo "PR URL: ${{ steps.doc-sync.outputs.pr_url }}"
+          echo "PR Number: ${{ steps.doc-sync.outputs.pr_number }}"
+          echo "Files Updated: ${{ steps.doc-sync.outputs.files_updated }}"
+          echo "Status: ${{ steps.doc-sync.outputs.status }}"
+          echo "========================================="

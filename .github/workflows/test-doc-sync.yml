@@ -29,20 +29,9 @@ jobs:
           ref: master  # Always checkout master branch
           fetch-depth: 50
 
-      - name: Check if merge commit
-        id: check-merge
-        run: |
-          # Check if current commit is a merge commit (has 2+ parents)
-          if git rev-parse --verify HEAD^2 >/dev/null 2>&1; then
-            echo "is_merge=true" >> $GITHUB_OUTPUT
-            echo "✅ This is a merge commit"
-          else
-            echo "is_merge=false" >> $GITHUB_OUTPUT
-            echo "⏭️  Not a merge commit, skipping doc sync"
-          fi
+
 
       - name: Run Doc Sync Agent
-        if: steps.check-merge.outputs.is_merge == 'true' || github.event_name == 'workflow_dispatch'
         uses: ./.github/actions/doc_sync_agent  # Uses local version
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}

@@ -189,16 +189,24 @@ runs:
 
         Your role is to analyze code changes and determine if project documentation needs to be updated. You make intelligent decisions about what warrants documentation updates and generate high-quality content when needed.
 
-        CRITICAL: Be conservative with updates. Documentation should ONLY be updated for significant, user-facing changes. DO NOT update documentation for:
-        - Minor bug fixes that don't change functionality
-        - Small UI tweaks (styling, colors, spacing)
-        - Internal code refactoring
-        - Dependency version bumps
-        - Code formatting or linting changes
-        - Internal variable/function renames
-        - Performance optimizations that don't affect usage
+        CRITICAL GUIDANCE:
+        1. Be PROACTIVE about documenting significant new additions:
+           - New applications, projects, or major features added to the repository
+           - New directories containing standalone applications (even if not previously documented)
+           - Complete rewrites or replacements of existing functionality
+           - New public APIs, tools, or utilities
 
-        Only update when changes genuinely impact how users understand or interact with the project."
+        2. Be CONSERVATIVE about minor changes:
+           DO NOT update documentation for:
+           - Minor bug fixes that don't change functionality
+           - Small UI tweaks (styling, colors, spacing)
+           - Internal code refactoring
+           - Dependency version bumps
+           - Code formatting or linting changes
+           - Internal variable/function renames
+           - Performance optimizations that don't affect usage
+
+        KEY PRINCIPLE: If a new significant project/application/feature is added (like a new app directory), ADD it to the documentation even if similar items weren't previously documented. The absence of prior documentation is not a reason to skip documenting important new additions."
 
         # Build user prompt
         USER_PROMPT="Repository: $REPOSITORY
@@ -221,6 +229,8 @@ runs:
         ## Your Task
         Analyze the code changes and determine:
         1. Do these changes require README.md updates? Consider:
+           - **NEW ADDITIONS**: New applications, projects, or app directories added (EVEN IF not previously documented)
+           - **MAJOR CHANGES**: Complete rewrites or replacements of existing functionality (e.g., calculator → weather app)
            - New features or functionality
            - Changes to setup/installation instructions
            - API or usage changes
@@ -235,6 +245,8 @@ runs:
 
         3. If yes to either, generate the COMPLETE updated content (not diffs)
 
+        IMPORTANT: The absence of prior documentation is NOT a reason to skip documenting significant new additions. If a new application or major feature is added, ADD it to the documentation.
+
         ## Response Format
         Respond ONLY with valid JSON in this exact structure (no markdown code blocks, just raw JSON):
         {
@@ -246,10 +258,19 @@ runs:
         }
 
         ## Important Guidelines
-        - BE CONSERVATIVE: Only update documentation for significant, user-facing changes
+        - BE PROACTIVE: Add documentation for new significant projects, applications, or features (even if not previously documented)
+        - BE CONSERVATIVE: Skip documentation updates for minor changes and internal refactoring
+        - PROACTIVE SCENARIOS: New app directories, complete rewrites, major feature additions, new tools/utilities
         - Preserve existing formatting style and structure exactly
-        - If files don't exist, only create them if changes strongly warrant documentation
         - Generate complete file content, not partial updates or diffs
+
+        ## DO Update Documentation For:
+        - New applications or projects added to the repository (e.g., new app folders)
+        - Complete application rewrites or replacements (e.g., calculator → weather app)
+        - New major features or functionality
+        - New public APIs, tools, or utilities
+        - Changes to setup/installation instructions
+        - Breaking changes or significant API modifications
 
         ## DO NOT Update Documentation For:
         - Minor bug fixes (unless they fix critical user-facing issues)

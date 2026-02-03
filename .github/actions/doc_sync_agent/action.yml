@@ -181,44 +181,60 @@ runs:
         CLAUDE_MD_CONTENT=$(cat /tmp/current_claude_md.txt)
 
         # Build system prompt
-        SYSTEM_PROMPT="You are an expert software architect and technical writer with deep expertise in:
-        - Understanding code architecture and impact analysis
-        - Technical writing and documentation best practices
-        - Identifying when changes affect public APIs, workflows, or user-facing features
-        - Creating clear, comprehensive documentation that follows existing style and structure
+        SYSTEM_PROMPT="You are an expert software architect and technical writer. Your ONLY role is to make MINIMAL, TARGETED updates to existing documentation.
 
-        Your role is to analyze code changes and determine if project documentation needs to be updated. You make intelligent decisions about what warrants documentation updates and generate high-quality content when needed.
+        ############################################################
+        # ABSOLUTE RULES - VIOLATION OF THESE RULES IS UNACCEPTABLE #
+        ############################################################
 
-        CRITICAL GUIDANCE:
-        1. Be PROACTIVE about documenting significant new additions:
-           - New applications, projects, or major features added to the repository
-           - New directories containing standalone applications (even if not previously documented)
-           - Complete rewrites or replacements of existing functionality
-           - New public APIs, tools, or utilities
+        RULE 1: PRESERVE EVERYTHING
+        - You MUST keep 100% of the existing documentation content intact
+        - Do NOT remove, rephrase, reorganize, or rewrite ANY existing text
+        - Do NOT change the structure, formatting, or style of existing content
+        - Do NOT 'improve' or 'clean up' existing documentation
+        - The existing documentation is SACRED - treat it as read-only except for specific additions
 
-        2. Be CONSERVATIVE about minor changes:
-           DO NOT update documentation for:
-           - Minor bug fixes that don't change functionality
-           - Small UI tweaks (styling, colors, spacing)
-           - Internal code refactoring
-           - Dependency version bumps
-           - Code formatting or linting changes
-           - Internal variable/function renames
-           - Performance optimizations that don't affect usage
+        RULE 2: MINIMAL CHANGES ONLY
+        - ONLY add new content where absolutely necessary
+        - ONLY modify specific lines that directly relate to the code change
+        - If adding a new section, insert it in the appropriate place without changing surrounding content
+        - Changes should be surgical - add/modify ONLY what's needed, nothing more
 
-        KEY PRINCIPLE: If a new significant project/application/feature is added (like a new app directory), ADD it to the documentation even if similar items weren't previously documented. The absence of prior documentation is not a reason to skip documenting important new additions."
+        RULE 3: MATCH EXISTING STYLE EXACTLY
+        - New content must match the exact formatting style of the existing document
+        - Use the same heading levels, bullet styles, code block formatting
+        - Do NOT introduce new formatting patterns
+
+        ############################################################
+        # WHEN TO UPDATE VS WHEN TO SKIP                           #
+        ############################################################
+
+        UPDATE documentation for:
+        - New features/applications that users need to know about
+        - New APIs, commands, or usage instructions
+        - Breaking changes that affect existing documented features
+        - New installation/setup requirements
+
+        DO NOT update documentation for:
+        - Internal refactoring
+        - Bug fixes (unless they change documented behavior)
+        - Code style/formatting changes
+        - Dependency updates (unless they affect setup instructions)
+        - Test changes
+        - Performance optimizations
+        - Internal variable/function renames"
 
         # Build user prompt
         USER_PROMPT="Repository: $REPOSITORY
         Merged PR/Commit: $PR_TITLE
         Commit SHA: $COMMIT_SHA
 
-        ## Code Changes
+        ## Code Changes (Diff)
         \`\`\`diff
         $DIFF_CONTENT
         \`\`\`
 
-        ## Current Documentation
+        ## Current Documentation (MUST BE PRESERVED)
 
         ### Current README.md
         $(if [ -n "$README_CONTENT" ]; then echo "\`\`\`markdown"; echo "$README_CONTENT"; echo "\`\`\`"; else echo "(File does not exist)"; fi)
@@ -226,63 +242,72 @@ runs:
         ### Current CLAUDE.md
         $(if [ -n "$CLAUDE_MD_CONTENT" ]; then echo "\`\`\`markdown"; echo "$CLAUDE_MD_CONTENT"; echo "\`\`\`"; else echo "(File does not exist)"; fi)
 
-        ## Your Task
-        Analyze the code changes and determine:
-        1. Do these changes require README.md updates? Consider:
-           - **NEW ADDITIONS**: New applications, projects, or app directories added (EVEN IF not previously documented)
-           - **MAJOR CHANGES**: Complete rewrites or replacements of existing functionality (e.g., calculator → weather app)
-           - New features or functionality
-           - Changes to setup/installation instructions
-           - API or usage changes
-           - Configuration changes
-           - Dependency changes that affect users
+        ############################################################
+        # YOUR TASK                                                 #
+        ############################################################
 
-        2. Do these changes require CLAUDE.md updates? Consider:
-           - AI/LLM integration changes
-           - Claude-specific workflows or prompts
-           - Architecture changes relevant to AI assistants
-           - Development guidelines for AI tools
+        1. Analyze the code changes (diff) above
+        2. Determine if documentation needs updating based on these criteria:
+           - Does the change add new user-facing features that need documentation?
+           - Does the change modify existing documented behavior?
+           - Does the change affect setup/installation instructions?
 
-        3. If yes to either, generate the COMPLETE updated content (not diffs)
+        3. If updates are needed:
+           - Start with the EXACT current documentation content (copy it character-for-character)
+           - Make ONLY the minimal necessary additions or modifications
+           - Do NOT remove, rephrase, or reorganize ANY existing content
+           - Do NOT rewrite or 'improve' existing text
 
-        IMPORTANT: The absence of prior documentation is NOT a reason to skip documenting significant new additions. If a new application or major feature is added, ADD it to the documentation.
+        ############################################################
+        # CRITICAL: OUTPUT REQUIREMENTS                             #
+        ############################################################
+
+        When generating updated content:
+        - The output MUST contain 100% of the original documentation
+        - ONLY add new lines/sections where needed
+        - ONLY modify specific lines that directly relate to the code change
+        - If you cannot identify a specific, minimal change to make, set should_update to false
+
+        VALIDATION: Before outputting, verify:
+        - Every line from the original documentation exists in your output
+        - No original text has been rephrased or reorganized
+        - Changes are limited to specific additions related to the code change
 
         ## Response Format
-        Respond ONLY with valid JSON in this exact structure (no markdown code blocks, just raw JSON):
+        Respond ONLY with valid JSON (no markdown code blocks):
         {
           \"should_update_readme\": boolean,
           \"should_update_claude_md\": boolean,
-          \"readme_content\": \"complete updated README.md content (only if should_update_readme is true, otherwise empty string)\",
-          \"claude_md_content\": \"complete updated CLAUDE.md content (only if should_update_claude_md is true, otherwise empty string)\",
-          \"reasoning\": \"Brief explanation of your decisions (2-4 sentences)\"
+          \"readme_content\": \"The COMPLETE README.md with minimal changes (MUST include ALL original content plus only necessary additions). Empty string if should_update_readme is false.\",
+          \"claude_md_content\": \"The COMPLETE CLAUDE.md with minimal changes (MUST include ALL original content plus only necessary additions). Empty string if should_update_claude_md is false.\",
+          \"reasoning\": \"Brief explanation: what specific change was made and why (2-3 sentences)\"
         }
 
-        ## Important Guidelines
-        - BE PROACTIVE: Add documentation for new significant projects, applications, or features (even if not previously documented)
-        - BE CONSERVATIVE: Skip documentation updates for minor changes and internal refactoring
-        - PROACTIVE SCENARIOS: New app directories, complete rewrites, major feature additions, new tools/utilities
-        - Preserve existing formatting style and structure exactly
-        - Generate complete file content, not partial updates or diffs
+        ############################################################
+        # EXAMPLES OF CORRECT VS INCORRECT BEHAVIOR                 #
+        ############################################################
 
-        ## DO Update Documentation For:
-        - New applications or projects added to the repository (e.g., new app folders)
-        - Complete application rewrites or replacements (e.g., calculator → weather app)
-        - New major features or functionality
-        - New public APIs, tools, or utilities
-        - Changes to setup/installation instructions
-        - Breaking changes or significant API modifications
+        CORRECT: Original doc has 'Installation: npm install'. Code adds new dependency.
+        -> Output keeps ALL original content, adds one line: '- New dependency: xyz'
 
-        ## DO NOT Update Documentation For:
-        - Minor bug fixes (unless they fix critical user-facing issues)
-        - Small UI changes (button colors, spacing, font sizes, styling tweaks)
-        - Internal code refactoring or reorganization
-        - Dependency version bumps (unless they require user action)
-        - Code formatting, linting, or style changes
-        - Internal variable/function/class renames
-        - Performance optimizations that don't affect how users interact
-        - Test file changes or test coverage improvements
-        - CI/CD configuration changes
-        - Development tooling updates"
+        INCORRECT: Rewriting 'Installation: npm install' as 'Getting Started: Run npm install'
+        -> This rephrases existing content - FORBIDDEN
+
+        CORRECT: New feature added. Insert new section '## New Feature' without changing other sections.
+
+        INCORRECT: Reorganizing existing sections or 'improving' their wording.
+        -> Existing content must remain exactly as-is.
+
+        ############################################################
+        # WHEN TO SET should_update TO FALSE                        #
+        ############################################################
+
+        Set should_update_readme/should_update_claude_md to FALSE if:
+        - The change is internal refactoring
+        - The change doesn't affect documented behavior
+        - The change is a bug fix that doesn't change documented usage
+        - You cannot identify a specific, minimal addition to make
+        - The existing documentation already covers the change adequately"
 
         # Call Claude API with timeout
         echo "Calling Claude API..."
@@ -370,6 +395,61 @@ runs:
 
         echo "has_updates=true" >> $GITHUB_OUTPUT
 
+        # Function to validate minimal changes
+        validate_minimal_changes() {
+          local original_file="$1"
+          local new_content="$2"
+          local file_name="$3"
+          
+          if [ ! -f "$original_file" ] || [ -z "$(cat "$original_file")" ]; then
+            # No original file, any content is acceptable
+            echo "true"
+            return
+          fi
+          
+          local original_content=$(cat "$original_file")
+          local original_lines=$(echo "$original_content" | wc -l)
+          local new_lines=$(echo "$new_content" | wc -l)
+          
+          # Calculate similarity - check if original lines exist in new content
+          local matching_lines=0
+          while IFS= read -r line; do
+            if [ -n "$line" ] && echo "$new_content" | grep -qF "$line"; then
+              matching_lines=$((matching_lines + 1))
+            fi
+          done <<< "$original_content"
+          
+          # Calculate preservation percentage (allow for some tolerance with empty lines)
+          local non_empty_original=$(echo "$original_content" | grep -c '.' || echo "0")
+          if [ "$non_empty_original" -eq 0 ]; then
+            echo "true"
+            return
+          fi
+          
+          local preservation_pct=$((matching_lines * 100 / non_empty_original))
+          
+          echo "Validation for $file_name:"
+          echo "  - Original non-empty lines: $non_empty_original"
+          echo "  - Matching lines in new content: $matching_lines"
+          echo "  - Preservation percentage: $preservation_pct%"
+          
+          # Require at least 80% of original content to be preserved
+          if [ "$preservation_pct" -lt 80 ]; then
+            echo "❌ REJECTED: New content preserves only $preservation_pct% of original (minimum 80% required)"
+            echo "false"
+            return
+          fi
+          
+          # Check if changes are excessive (more than 50% increase in size)
+          local size_increase=$((new_lines * 100 / original_lines))
+          if [ "$size_increase" -gt 150 ]; then
+            echo "⚠️  WARNING: Content size increased by $((size_increase - 100))% - may indicate excessive changes"
+          fi
+          
+          echo "✅ Validation passed: $preservation_pct% of original content preserved"
+          echo "true"
+        }
+
         # Update files
         UPDATED_FILES=""
 
@@ -381,19 +461,28 @@ runs:
           if [ -z "$README_CONTENT" ] || [ "$README_CONTENT" = "null" ]; then
             echo "⚠️  WARNING: README content is empty, skipping"
           else
-            # Save current content for comparison
-            CURRENT_README=$(cat README.md 2>/dev/null || echo "")
-
-            # Write new content
-            echo "$README_CONTENT" > README.md
-
-            # Verify content actually changed using git
-            if git diff --exit-code README.md > /dev/null 2>&1; then
-              echo "⚠️  WARNING: README.md content unchanged - Claude generated identical content"
-              echo "Claude decided update was needed but generated same content as current file"
+            # Validate minimal changes before applying
+            VALIDATION_RESULT=$(validate_minimal_changes "/tmp/current_readme.txt" "$README_CONTENT" "README.md")
+            echo "$VALIDATION_RESULT"
+            
+            if echo "$VALIDATION_RESULT" | grep -q "false$"; then
+              echo "❌ README.md update rejected due to excessive changes"
+              echo "## ⚠️ README.md Update Rejected" >> $GITHUB_STEP_SUMMARY
+              echo "The proposed changes were too extensive and did not preserve the original content." >> $GITHUB_STEP_SUMMARY
             else
-              UPDATED_FILES="README.md"
-              echo "✅ README.md updated with actual changes"
+              # Write new content
+              echo "$README_CONTENT" > README.md
+
+              # Verify content actually changed using git
+              if git diff --exit-code README.md > /dev/null 2>&1; then
+                echo "⚠️  WARNING: README.md content unchanged - Claude generated identical content"
+              else
+                # Show the actual diff for transparency
+                echo "📝 Changes to README.md:"
+                git diff README.md | head -50
+                UPDATED_FILES="README.md"
+                echo "✅ README.md updated with minimal changes"
+              fi
             fi
           fi
         fi
@@ -406,25 +495,40 @@ runs:
           if [ -z "$CLAUDE_MD_CONTENT" ] || [ "$CLAUDE_MD_CONTENT" = "null" ]; then
             echo "⚠️  WARNING: CLAUDE.md content is empty, skipping"
           else
-            # Save current content for comparison
-            CURRENT_CLAUDE_MD=$(cat CLAUDE.md 2>/dev/null || echo "")
-
-            # Write new content
-            echo "$CLAUDE_MD_CONTENT" > CLAUDE.md
-
-            # Verify content actually changed using git
-            if git diff --exit-code CLAUDE.md > /dev/null 2>&1; then
-              echo "⚠️  WARNING: CLAUDE.md content unchanged - Claude generated identical content"
-              echo "Claude decided update was needed but generated same content as current file"
+            # Validate minimal changes before applying
+            VALIDATION_RESULT=$(validate_minimal_changes "/tmp/current_claude_md.txt" "$CLAUDE_MD_CONTENT" "CLAUDE.md")
+            echo "$VALIDATION_RESULT"
+            
+            if echo "$VALIDATION_RESULT" | grep -q "false$"; then
+              echo "❌ CLAUDE.md update rejected due to excessive changes"
+              echo "## ⚠️ CLAUDE.md Update Rejected" >> $GITHUB_STEP_SUMMARY
+              echo "The proposed changes were too extensive and did not preserve the original content." >> $GITHUB_STEP_SUMMARY
             else
-              if [ -n "$UPDATED_FILES" ]; then
-                UPDATED_FILES="$UPDATED_FILES,CLAUDE.md"
+              # Write new content
+              echo "$CLAUDE_MD_CONTENT" > CLAUDE.md
+
+              # Verify content actually changed using git
+              if git diff --exit-code CLAUDE.md > /dev/null 2>&1; then
+                echo "⚠️  WARNING: CLAUDE.md content unchanged - Claude generated identical content"
               else
-                UPDATED_FILES="CLAUDE.md"
+                # Show the actual diff for transparency
+                echo "📝 Changes to CLAUDE.md:"
+                git diff CLAUDE.md | head -50
+                if [ -n "$UPDATED_FILES" ]; then
+                  UPDATED_FILES="$UPDATED_FILES,CLAUDE.md"
+                else
+                  UPDATED_FILES="CLAUDE.md"
+                fi
+                echo "✅ CLAUDE.md updated with minimal changes"
               fi
-              echo "✅ CLAUDE.md updated with actual changes"
             fi
           fi
+        fi
+
+        # If all updates were rejected, set has_updates to false
+        if [ -z "$UPDATED_FILES" ]; then
+          echo "has_updates=false" >> $GITHUB_OUTPUT
+          echo "No valid updates after validation"
         fi
 
         echo "files_updated=$UPDATED_FILES" >> $GITHUB_OUTPUT

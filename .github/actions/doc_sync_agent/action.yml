@@ -312,6 +312,11 @@ runs:
       run: |
         set -e
 
+        # #region agent log - Hypothesis A/B: Check if claude_decision.json exists and has content
+        echo "[DEBUG][HypA] Checking /tmp/claude_decision.json exists: $(test -f /tmp/claude_decision.json && echo 'YES' || echo 'NO')"
+        echo "[DEBUG][HypA] File size: $(wc -c < /tmp/claude_decision.json 2>/dev/null || echo 'N/A')"
+        # #endregion
+
         echo "Parsing Claude's decision..."
 
         # Read Claude's response
@@ -332,6 +337,12 @@ runs:
         SHOULD_UPDATE_CLAUDE_MD=$(echo "$CLAUDE_DECISION" | jq -r '.should_update_claude_md')
         REASONING=$(echo "$CLAUDE_DECISION" | jq -r '.reasoning')
 
+        # #region agent log - Hypothesis A: Log parsed values
+        echo "[DEBUG][HypA] SHOULD_UPDATE_README='$SHOULD_UPDATE_README'"
+        echo "[DEBUG][HypA] SHOULD_UPDATE_CLAUDE_MD='$SHOULD_UPDATE_CLAUDE_MD'"
+        echo "[DEBUG][HypA] REASONING length: ${#REASONING}"
+        # #endregion
+
         echo "should_update_readme=$SHOULD_UPDATE_README" >> $GITHUB_OUTPUT
         echo "should_update_claude_md=$SHOULD_UPDATE_CLAUDE_MD" >> $GITHUB_OUTPUT
         echo "reasoning<<EOF" >> $GITHUB_OUTPUT
@@ -341,12 +352,18 @@ runs:
         # Check if any updates needed
         if [ "$SHOULD_UPDATE_README" = "false" ] && [ "$SHOULD_UPDATE_CLAUDE_MD" = "false" ]; then
           echo "No documentation updates needed"
+          # #region agent log - Hypothesis A: No updates branch
+          echo "[DEBUG][HypA] Exiting early - no updates needed"
+          # #endregion
           echo "has_updates=false" >> $GITHUB_OUTPUT
           echo "## ✅ No Updates Needed" >> $GITHUB_STEP_SUMMARY
           echo "$REASONING" >> $GITHUB_STEP_SUMMARY
           exit 0
         fi
 
+        # #region agent log - Hypothesis A: Updates needed branch
+        echo "[DEBUG][HypA] Updates ARE needed, setting has_updates=true"
+        # #endregion
         echo "has_updates=true" >> $GITHUB_OUTPUT
 
         # Update files
@@ -356,13 +373,24 @@ runs:
           echo "Updating README.md..."
           README_CONTENT=$(echo "$CLAUDE_DECISION" | jq -r '.readme_content')
 
+          # #region agent log - Hypothesis B: Check README content
+          echo "[DEBUG][HypB] README_CONTENT length: ${#README_CONTENT}"
+          echo "[DEBUG][HypB] README_CONTENT first 100 chars: ${README_CONTENT:0:100}"
+          # #endregion
+
           # Validate content is not empty
           if [ -z "$README_CONTENT" ] || [ "$README_CONTENT" = "null" ]; then
             echo "Warning: README content is empty, skipping"
+            # #region agent log - Hypothesis B: Empty content
+            echo "[DEBUG][HypB] README content validation FAILED - empty or null"
+            # #endregion
           else
             echo "$README_CONTENT" > README.md
             UPDATED_FILES="README.md"
             echo "README.md updated"
+            # #region agent log - Hypothesis B: File written
+            echo "[DEBUG][HypB] README.md written successfully, file size: $(wc -c < README.md)"
+            # #endregion
           fi
         fi
 
@@ -384,6 +412,10 @@ runs:
           fi
         fi
 
+        # #region agent log - Hypothesis A/B: Final state
+        echo "[DEBUG][HypA] Final UPDATED_FILES='$UPDATED_FILES'"
+        echo "[DEBUG][HypA] Setting files_updated output now"
+        # #endregion
         echo "files_updated=$UPDATED_FILES" >> $GITHUB_OUTPUT
 
         echo "## 📝 Files Updated" >> $GITHUB_STEP_SUMMARY
@@ -405,6 +437,13 @@ runs:
       run: |
         set -e
 
+        # #region agent log - Hypothesis C: Step 7 entered
+        echo "[DEBUG][HypC] Step 7 (Create PR) STARTED"
+        echo "[DEBUG][HypC] has_updates condition passed, proceeding with PR creation"
+        echo "[DEBUG][HypC] BASE_BRANCH='$BASE_BRANCH'"
+        echo "[DEBUG][HypC] REPOSITORY='$REPOSITORY'"
+        # #endregion
+
         echo "Creating pull request..."
 
         # Configure git
@@ -415,25 +454,60 @@ runs:
         BRANCH="docs/auto-sync-$(date +%Y%m%d-%H%M%S)"
         git checkout -b "$BRANCH"
 
+        # #region agent log - Hypothesis C: Branch created
+        echo "[DEBUG][HypC] Created branch: $BRANCH"
+        echo "[DEBUG][HypC] Current git status:"
+        git status
+        # #endregion
+
         # Get reasoning from previous step
         REASONING=$(cat /tmp/claude_decision.json | jq -r '.reasoning')
         FILES_UPDATED="${{ steps.update-files.outputs.files_updated }}"
 
+        # #region agent log - Hypothesis C: Check files before staging
+        echo "[DEBUG][HypC] FILES_UPDATED='$FILES_UPDATED'"
+        echo "[DEBUG][HypC] README.md exists: $(test -f README.md && echo 'YES' || echo 'NO')"
+        echo "[DEBUG][HypC] CLAUDE.md exists: $(test -f CLAUDE.md && echo 'YES' || echo 'NO')"
+        echo "[DEBUG][HypC] Git diff before staging:"
+        git diff --name-only || echo "No diff"
+        # #endregion
+
         # Stage changes
         git add README.md CLAUDE.md 2>/dev/null || true
+
+        # #region agent log - Hypothesis C: After staging
+        echo "[DEBUG][HypC] After git add, staged files:"
+        git diff --cached --name-only || echo "No staged files"
+        # #endregion
 
         # Check if there are changes to commit
         if git diff --cached --quiet; then
           echo "No changes to commit after staging"
+          # #region agent log - Hypothesis C: No changes detected
+          echo "[DEBUG][HypC] CRITICAL: git diff --cached --quiet returned TRUE - no staged changes detected!"
+          echo "[DEBUG][HypC] This means the files were NOT modified from the original"
+          # #endregion
           echo "pr_created=false" >> $GITHUB_OUTPUT
           exit 0
         fi
 
+        # #region agent log - Hypothesis C: Changes detected
+        echo "[DEBUG][HypC] Changes detected, proceeding with commit"
+        # #endregion
+
         # Commit
         git commit -m "docs: Auto-sync documentation for $COMMIT_SHA"
 
+        # #region agent log - Hypothesis C/D: Push attempt
+        echo "[DEBUG][HypC] Commit successful, attempting push to origin/$BRANCH"
+        # #endregion
+
         # Push branch
         git push origin "$BRANCH"
+
+        # #region agent log - Hypothesis D: Push successful
+        echo "[DEBUG][HypD] Push successful"
+        # #endregion
 
         # Build PR body
         FILES_LIST=$(echo "$FILES_UPDATED" | tr ',' '\n' | sed 's/^/- /')
@@ -444,16 +518,31 @@ runs:
         PR_BODY="${PR_BODY}\n\n### Triggered By\n- Commit: \`${COMMIT_SHA}\`\n- Original PR: ${PR_URL}"
         PR_BODY="${PR_BODY}\n\n---\n🤖 *Generated by [doc_sync_agent](https://github.com/${REPOSITORY}/.github/actions/doc_sync_agent) | Powered by Claude AI*"
 
+        # #region agent log - Hypothesis D: PR creation attempt
+        echo "[DEBUG][HypD] Attempting to create PR with gh pr create"
+        echo "[DEBUG][HypD] Base branch: $BASE_BRANCH"
+        echo "[DEBUG][HypD] Head branch: $BRANCH"
+        # #endregion
+
         # Create PR
         NEW_PR_URL=$(gh pr create \
           --title "📚 docs: Auto-sync documentation" \
           --body "$PR_BODY" \
           --base "$BASE_BRANCH" \
           --head "$BRANCH" 2>&1) || {
+          # #region agent log - Hypothesis D: PR creation failed
+          echo "[DEBUG][HypD] CRITICAL: gh pr create FAILED"
+          echo "[DEBUG][HypD] Error output: $NEW_PR_URL"
+          # #endregion
           echo "Failed to create PR"
           echo "pr_created=false" >> $GITHUB_OUTPUT
           exit 1
         }
+
+        # #region agent log - Hypothesis D: PR created
+        echo "[DEBUG][HypD] gh pr create succeeded"
+        echo "[DEBUG][HypD] NEW_PR_URL='$NEW_PR_URL'"
+        # #endregion
 
         # Extract PR number from URL
         PR_NUMBER=$(echo "$NEW_PR_URL" | grep -oE '[0-9]+$' || echo "")
@@ -467,6 +556,23 @@ runs:
         echo "- PR URL: $NEW_PR_URL" >> $GITHUB_STEP_SUMMARY
         echo "- PR Number: #$PR_NUMBER" >> $GITHUB_STEP_SUMMARY
         echo "- Branch: $BRANCH" >> $GITHUB_STEP_SUMMARY
+
+    # Step 7.5: Debug outputs
+    - name: Debug output values
+      if: always()
+      shell: bash
+      run: |
+        # #region agent log - Debug all step outputs
+        echo "======== DEBUG: All Step Outputs ========"
+        echo "[DEBUG] update-files.has_updates = '${{ steps.update-files.outputs.has_updates }}'"
+        echo "[DEBUG] update-files.files_updated = '${{ steps.update-files.outputs.files_updated }}'"
+        echo "[DEBUG] update-files.should_update_readme = '${{ steps.update-files.outputs.should_update_readme }}'"
+        echo "[DEBUG] update-files.should_update_claude_md = '${{ steps.update-files.outputs.should_update_claude_md }}'"
+        echo "[DEBUG] create-pr.pr_created = '${{ steps.create-pr.outputs.pr_created }}'"
+        echo "[DEBUG] create-pr.pr_url = '${{ steps.create-pr.outputs.pr_url }}'"
+        echo "[DEBUG] analyze.api_success = '${{ steps.analyze.outputs.api_success }}'"
+        echo "======== END DEBUG ========"
+        # #endregion
 
     # Step 8: Send Slack Notification
     - name: Send Slack notification

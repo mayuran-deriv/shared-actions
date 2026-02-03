@@ -5,6 +5,7 @@ on:
     branches:
       - master
       - main
+      - test  # For testing: merge check-test → test
   workflow_dispatch:  # Manual trigger for testing
 
 jobs:

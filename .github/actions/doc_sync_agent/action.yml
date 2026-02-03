@@ -161,6 +161,50 @@ runs:
         echo "- README.md exists: $README_EXISTS" >> $GITHUB_STEP_SUMMARY
         echo "- CLAUDE.md exists: $CLAUDE_MD_EXISTS" >> $GITHUB_STEP_SUMMARY
 
+    # Step 4.5: Collect Repository Context (when creating new docs)
+    - name: Collect repository context
+      id: repo-context
+      shell: bash
+      run: |
+        set -e
+
+        echo "Collecting repository context..."
+
+        # Get repository structure (directories and key files)
+        REPO_STRUCTURE=$(find . -maxdepth 3 -type d -not -path '*/\.*' -not -path '*/node_modules/*' -not -path '*/dist/*' -not -path '*/build/*' | head -n 100)
+
+        # Get list of important files
+        KEY_FILES=$(find . -maxdepth 2 -type f \( -name "*.md" -o -name "package.json" -o -name "*.yml" -o -name "*.yaml" -o -name "*.config.*" \) -not -path '*/\.*' -not -path '*/node_modules/*' | head -n 50)
+
+        # Get package.json files for understanding projects
+        PACKAGE_JSONS=$(find . -name "package.json" -not -path '*/node_modules/*' | head -n 10)
+
+        PACKAGES_INFO=""
+        for pkg in $PACKAGE_JSONS; do
+          if [ -f "$pkg" ]; then
+            PKG_NAME=$(jq -r '.name // "N/A"' "$pkg" 2>/dev/null || echo "N/A")
+            PKG_DESC=$(jq -r '.description // "N/A"' "$pkg" 2>/dev/null || echo "N/A")
+            PACKAGES_INFO="$PACKAGES_INFO\n\nFile: $pkg\nName: $PKG_NAME\nDescription: $PKG_DESC"
+          fi
+        done
+
+        # Save context to file
+        echo "=== Repository Structure ===" > /tmp/repo_context.txt
+        echo "$REPO_STRUCTURE" >> /tmp/repo_context.txt
+        echo -e "\n=== Key Files ===" >> /tmp/repo_context.txt
+        echo "$KEY_FILES" >> /tmp/repo_context.txt
+        echo -e "\n=== Package Information ===" >> /tmp/repo_context.txt
+        echo -e "$PACKAGES_INFO" >> /tmp/repo_context.txt
+
+        # Get list of GitHub Actions
+        ACTIONS_LIST=$(find .github/actions -type d -maxdepth 1 -not -path '.github/actions' 2>/dev/null | sed 's|.github/actions/||' || echo "")
+        echo -e "\n=== GitHub Actions ===" >> /tmp/repo_context.txt
+        echo "$ACTIONS_LIST" >> /tmp/repo_context.txt
+
+        echo "## Repository Context Collected" >> $GITHUB_STEP_SUMMARY
+        echo "- Directories found: $(echo "$REPO_STRUCTURE" | wc -l)" >> $GITHUB_STEP_SUMMARY
+        echo "- Key files found: $(echo "$KEY_FILES" | wc -l)" >> $GITHUB_STEP_SUMMARY
+
     # Step 5: Analyze with Claude AI
     - name: Analyze with Claude AI
       id: analyze
@@ -179,6 +223,7 @@ runs:
         DIFF_CONTENT=$(cat /tmp/code_diff.txt)
         README_CONTENT=$(cat /tmp/current_readme.txt)
         CLAUDE_MD_CONTENT=$(cat /tmp/current_claude_md.txt)
+        REPO_CONTEXT=$(cat /tmp/repo_context.txt)
 
         # Build system prompt
         SYSTEM_PROMPT="You are an expert software architect and technical writer with deep expertise in:
@@ -213,6 +258,12 @@ runs:
         Merged PR/Commit: $PR_TITLE
         Commit SHA: $COMMIT_SHA
 
+        ## Repository Context
+        When creating NEW documentation files, use this full repository context to write comprehensive documentation:
+        \`\`\`
+        $REPO_CONTEXT
+        \`\`\`
+
         ## Code Changes
         \`\`\`diff
         $DIFF_CONTENT
@@ -245,6 +296,12 @@ runs:
 
         3. If yes to either, generate the COMPLETE updated content (not diffs)
 
+        CRITICAL FOR NEW FILES:
+        - When creating a NEW documentation file (that doesn't currently exist), use the FULL repository context provided above
+        - Do NOT just document the recent changes - document the ENTIRE project comprehensively
+        - Include all existing applications, GitHub Actions, tools, and features found in the repository context
+        - The goal is to create complete, comprehensive documentation, not just document what changed
+
         IMPORTANT: The absence of prior documentation is NOT a reason to skip documenting significant new additions. If a new application or major feature is added, ADD it to the documentation.
 
         ## Response Format
@@ -261,6 +318,8 @@ runs:
         - BE PROACTIVE: Add documentation for new significant projects, applications, or features (even if not previously documented)
         - BE CONSERVATIVE: Skip documentation updates for minor changes and internal refactoring
         - PROACTIVE SCENARIOS: New app directories, complete rewrites, major feature additions, new tools/utilities
+        - **FOR NEW FILES**: When creating documentation from scratch, use the repository context to document the ENTIRE project, not just recent changes
+        - **FOR EXISTING FILES**: Update only the relevant sections affected by the changes
         - Preserve existing formatting style and structure exactly
         - Generate complete file content, not partial updates or diffs
 

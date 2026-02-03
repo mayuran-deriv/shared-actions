@@ -1,0 +1,141 @@
+.weather {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-radius: 20px;
+  padding: 30px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+  max-width: 500px;
+  margin: 0 auto;
+  color: white;
+}
+
+.weather-search {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.weather-input {
+  flex: 1;
+  padding: 12px 16px;
+  border: none;
+  border-radius: 10px;
+  font-size: 16px;
+  background: rgba(255, 255, 255, 0.2);
+  color: white;
+  outline: none;
+  transition: background 0.3s;
+}
+
+.weather-input::placeholder {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.weather-input:focus {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.weather-button {
+  padding: 12px 24px;
+  border: none;
+  border-radius: 10px;
+  font-size: 16px;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.9);
+  color: #667eea;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+
+.weather-button:hover:not(:disabled) {
+  background: white;
+  transform: translateY(-2px);
+  box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+}
+
+.weather-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.weather-error {
+  background: rgba(255, 255, 255, 0.2);
+  padding: 12px;
+  border-radius: 10px;
+  text-align: center;
+  margin-bottom: 20px;
+  color: #ffebee;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+.weather-result {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 15px;
+  padding: 25px;
+  text-align: center;
+  backdrop-filter: blur(10px);
+}
+
+.weather-city {
+  font-size: 28px;
+  font-weight: 600;
+  margin: 0 0 15px 0;
+  color: white;
+}
+
+.weather-temp {
+  font-size: 64px;
+  font-weight: 700;
+  margin: 10px 0;
+  color: white;
+}
+
+.weather-description {
+  font-size: 24px;
+  margin: 15px 0;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.weather-details {
+  display: flex;
+  justify-content: space-around;
+  margin-top: 25px;
+  padding-top: 20px;
+  border-top: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.weather-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.detail-label {
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.7);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.detail-value {
+  font-size: 22px;
+  font-weight: 600;
+  color: white;
+}
+
+@media (max-width: 600px) {
+  .weather {
+    padding: 20px;
+  }
+
+  .weather-temp {
+    font-size: 48px;
+  }
+
+  .weather-city {
+    font-size: 22px;
+  }
+
+  .weather-description {
+    font-size: 20px;
+  }
+}

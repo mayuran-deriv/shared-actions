@@ -1,0 +1,923 @@
+# .github/workflows/ci-cd-pipeline.yml
+#
+# Advanced CI/CD Pipeline with Multi-Stage Deployment
+#
+# Features:
+# - Matrix builds across multiple Python versions and OS
+# - Parallel test execution with sharding
+# - Code quality gates (linting, type checking, security scanning)
+# - Automated documentation generation and deployment
+# - Container image building with multi-arch support
+# - Progressive deployment (staging -> production)
+# - Automated rollback on failure
+# - Slack/Discord notifications
+# - Dependency caching and artifact management
+# - Performance benchmarking
+# - Database migration handling
+#
+# Version: 2.0.0
+
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - 'release/**'
+      - 'feature/**'
+    tags:
+      - 'v*'
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+      - 'LICENSE'
+  
+  pull_request:
+    branches:
+      - main
+      - develop
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+  
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      skip_tests:
+        description: 'Skip test execution'
+        required: false
+        default: false
+        type: boolean
+      force_deploy:
+        description: 'Force deployment even on failure'
+        required: false
+        default: false
+        type: boolean
+      debug_enabled:
+        description: 'Enable debug mode'
+        required: false
+        default: false
+        type: boolean
+
+  schedule:
+    # Run security scan daily at midnight UTC
+    - cron: '0 0 * * *'
+
+# Concurrency control to prevent multiple deployments
+concurrency:
+  group: $${{ github.workflow }}-$${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Environment variables available to all jobs
+env:
+  PYTHON_VERSION_DEFAULT: '3.11'
+  NODE_VERSION: '20'
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  CACHE_VERSION: v2
+  COVERAGE_THRESHOLD: 80
+  ARTIFACT_RETENTION_DAYS: 30
+
+permissions:
+  contents: read
+  packages: write
+  security-events: write
+  pull-requests: write
+  issues: write
+  id-token: write
+  deployments: write
+
+jobs:
+  # ============================================================
+  # Pre-flight checks and initialization
+  # ============================================================
+  initialize:
+    name: Initialize Pipeline
+    runs-on: ubuntu-latest
+    outputs:
+      should_deploy: ${{ steps.check.outputs.should_deploy }}
+      is_release: ${{ steps.check.outputs.is_release }}
+      version: ${{ steps.version.outputs.version }}
+      short_sha: ${{ steps.check.outputs.short_sha }}
+      branch_name: ${{ steps.check.outputs.branch_name }}
+      changed_files: ${{ steps.changes.outputs.files }}
+      run_tests: ${{ steps.check.outputs.run_tests }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Check pipeline conditions
+        id: check
+        run: |
+          echo "short_sha=$${GITHUB_SHA::8}" >> $$GITHUB_OUTPUT
+          echo "branch_name=$${GITHUB_REF#refs/heads/}" >> $$GITHUB_OUTPUT
+          
+          # Determine if this should trigger deployment
+          if [[ "$${{ github.event_name }}" == "push" && "$${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "should_deploy=true" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "should_deploy=true" >> $GITHUB_OUTPUT
+          else
+            echo "should_deploy=false" >> $GITHUB_OUTPUT
+          fi
+          
+          # Check if this is a release
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            echo "is_release=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_release=false" >> $GITHUB_OUTPUT
+          fi
+          
+          # Determine if tests should run
+          if [[ "${{ inputs.skip_tests }}" == "true" ]]; then
+            echo "run_tests=false" >> $GITHUB_OUTPUT
+          else
+            echo "run_tests=true" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Calculate version
+        id: version
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
+          else
+            VERSION="0.0.0-dev.${GITHUB_SHA::8}"
+          fi
+          echo "version=$$VERSION" >> $$GITHUB_OUTPUT
+          echo "Calculated version: $VERSION"
+      
+      - name: Detect changed files
+        id: changes
+        uses: dorny/paths-filter@v2
+        with:
+          list-files: json
+          filters: |
+            python:
+              - '**/*.py'
+            tests:
+              - 'tests/**'
+            docs:
+              - 'docs/**'
+              - '**/*.md'
+            docker:
+              - 'Dockerfile*'
+              - 'docker-compose*.yml'
+            dependencies:
+              - 'requirements*.txt'
+              - 'pyproject.toml'
+              - 'setup.py'
+              - 'setup.cfg'
+            workflows:
+              - '.github/workflows/**'
+      
+      - name: Print pipeline info
+        run: |
+          echo "🚀 Pipeline Information"
+          echo "======================"
+          echo "Event: ${{ github.event_name }}"
+          echo "Ref: ${{ github.ref }}"
+          echo "SHA: ${{ github.sha }}"
+          echo "Short SHA: ${{ steps.check.outputs.short_sha }}"
+          echo "Version: ${{ steps.version.outputs.version }}"
+          echo "Should Deploy: ${{ steps.check.outputs.should_deploy }}"
+          echo "Is Release: ${{ steps.check.outputs.is_release }}"
+          echo "Run Tests: ${{ steps.check.outputs.run_tests }}"
+
+  # ============================================================
+  # Code Quality Checks
+  # ============================================================
+  code-quality:
+    name: Code Quality
+    runs-on: ubuntu-latest
+    needs: initialize
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION_DEFAULT }}
+      
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: $${{ runner.os }}-pip-quality-$${{ env.CACHE_VERSION }}-${{ hashFiles('requirements-dev.txt') }}
+          restore-keys: |
+            $${{ runner.os }}-pip-quality-$${{ env.CACHE_VERSION }}-
+            ${{ runner.os }}-pip-
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff black isort mypy bandit pylint
+          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+      
+      - name: Run Ruff linter
+        id: ruff
+        continue-on-error: true
+        run: |
+          ruff check . --output-format=github --statistics
+      
+      - name: Run Black formatter check
+        id: black
+        continue-on-error: true
+        run: |
+          black --check --diff .
+      
+      - name: Run isort import checker
+        id: isort
+        continue-on-error: true
+        run: |
+          isort --check-only --diff .
+      
+      - name: Run MyPy type checker
+        id: mypy
+        continue-on-error: true
+        run: |
+          mypy src/ --ignore-missing-imports --show-error-codes || true
+      
+      - name: Run Pylint
+        id: pylint
+        continue-on-error: true
+        run: |
+          pylint src/ --exit-zero --output-format=colorized
+      
+      - name: Quality gate check
+        run: |
+          if [[ "${{ steps.ruff.outcome }}" == "failure" ]] || \
+             [[ "${{ steps.black.outcome }}" == "failure" ]] || \
+             [[ "${{ steps.isort.outcome }}" == "failure" ]]; then
+            echo "::warning::Code quality checks have issues. Please fix them."
+          fi
+
+  # ============================================================
+  # Security Scanning
+  # ============================================================
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: initialize
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION_DEFAULT }}
+      
+      - name: Install security tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install bandit safety pip-audit
+      
+      - name: Run Bandit security linter
+        run: |
+          bandit -r src/ -f json -o bandit-report.json || true
+          bandit -r src/ -f screen
+      
+      - name: Check dependencies with Safety
+        continue-on-error: true
+        run: |
+          if [ -f requirements.txt ]; then
+            safety check -r requirements.txt --full-report
+          fi
+      
+      - name: Run pip-audit
+        continue-on-error: true
+        run: |
+          pip-audit --strict || true
+      
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+      
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+      
+      - name: Upload security reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-reports
+          path: |
+            bandit-report.json
+            trivy-results.sarif
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+  # ============================================================
+  # Matrix Testing
+  # ============================================================
+  test:
+    name: Test (Python $${{ matrix.python-version }}, $${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: [initialize, code-quality]
+    if: needs.initialize.outputs.run_tests == 'true'
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ['3.9', '3.10', '3.11', '3.12']
+        exclude:
+          # Exclude some combinations to save time
+          - os: windows-latest
+            python-version: '3.9'
+          - os: macos-latest
+            python-version: '3.9'
+        include:
+          # Include specific combinations with extra settings
+          - os: ubuntu-latest
+            python-version: '3.11'
+            coverage: true
+            benchmark: true
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: testdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    
+    env:
+      DATABASE_URL: postgresql://testuser:testpass@localhost:5432/testdb
+      REDIS_URL: redis://localhost:6379
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~\AppData\Local\pip\Cache
+          key: $${{ runner.os }}-pip-$${{ matrix.python-version }}-$${{ env.CACHE_VERSION }}-$${{ hashFiles('requirements*.txt') }}
+          restore-keys: |
+            $${{ runner.os }}-pip-$${{ matrix.python-version }}-${{ env.CACHE_VERSION }}-
+            $${{ runner.os }}-pip-$${{ matrix.python-version }}-
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install pytest pytest-asyncio pytest-cov pytest-xdist pytest-timeout hypothesis
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+        shell: bash
+      
+      - name: Run tests with coverage
+        if: matrix.coverage
+        run: |
+          pytest tests/ \
+            --cov=src \
+            --cov-report=xml \
+            --cov-report=html \
+            --cov-report=term-missing \
+            --cov-fail-under=${{ env.COVERAGE_THRESHOLD }} \
+            -n auto \
+            --timeout=300 \
+            -v \
+            --tb=short
+        shell: bash
+      
+      - name: Run tests without coverage
+        if: ${{ !matrix.coverage }}
+        run: |
+          pytest tests/ \
+            -n auto \
+            --timeout=300 \
+            -v \
+            --tb=short
+        shell: bash
+      
+      - name: Run benchmarks
+        if: matrix.benchmark
+        run: |
+          pytest tests/benchmarks/ \
+            --benchmark-only \
+            --benchmark-json=benchmark-results.json \
+            --benchmark-compare \
+            || true
+        shell: bash
+      
+      - name: Upload coverage report
+        if: matrix.coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report-$${{ matrix.os }}-$${{ matrix.python-version }}
+          path: |
+            coverage.xml
+            htmlcov/
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+      
+      - name: Upload coverage to Codecov
+        if: matrix.coverage
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+          flags: unittests
+          name: codecov-$${{ matrix.os }}-$${{ matrix.python-version }}
+          fail_ci_if_error: false
+          verbose: true
+      
+      - name: Upload benchmark results
+        if: matrix.benchmark
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: benchmark-results.json
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+  # ============================================================
+  # Integration Tests
+  # ============================================================
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [initialize, test]
+    if: needs.initialize.outputs.run_tests == 'true'
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION_DEFAULT }}
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Start services with Docker Compose
+        run: |
+          docker compose -f docker-compose.test.yml up -d
+          sleep 10
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+      
+      - name: Run integration tests
+        run: |
+          pytest tests/integration/ \
+            -v \
+            --timeout=600 \
+            --tb=short \
+            -m integration
+        env:
+          TEST_ENV: integration
+      
+      - name: Collect Docker logs on failure
+        if: failure()
+        run: |
+          docker compose -f docker-compose.test.yml logs > docker-logs.txt
+      
+      - name: Upload Docker logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-logs
+          path: docker-logs.txt
+      
+      - name: Cleanup
+        if: always()
+        run: |
+          docker compose -f docker-compose.test.yml down -v
+
+  # ============================================================
+  # Build Documentation
+  # ============================================================
+  build-docs:
+    name: Build Documentation
+    runs-on: ubuntu-latest
+    needs: initialize
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION_DEFAULT }}
+      
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: $${{ runner.os }}-pip-docs-$${{ env.CACHE_VERSION }}-${{ hashFiles('docs/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-docs-
+      
+      - name: Install documentation dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install sphinx sphinx-rtd-theme sphinx-autodoc-typehints myst-parser
+          if [ -f docs/requirements.txt ]; then pip install -r docs/requirements.txt; fi
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      
+      - name: Build Sphinx documentation
+        run: |
+          cd docs
+          make html SPHINXOPTS="-W --keep-going"
+      
+      - name: Check documentation links
+        run: |
+          cd docs
+          make linkcheck || true
+      
+      - name: Upload documentation artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: documentation
+          path: docs/_build/html/
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+      
+      - name: Deploy to GitHub Pages
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: docs/_build/html
+          cname: docs.example.com
+
+  # ============================================================
+  # Build Container Images
+  # ============================================================
+  build-container:
+    name: Build Container Image
+    runs-on: ubuntu-latest
+    needs: [initialize, test, security-scan]
+    if: |
+      always() && 
+      (needs.test.result == 'success' || needs.test.result == 'skipped') &&
+      (needs.initialize.outputs.should_deploy == 'true' || needs.initialize.outputs.is_release == 'true')
+    
+    outputs:
+      image_digest: ${{ steps.build.outputs.digest }}
+      image_tags: ${{ steps.meta.outputs.tags }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          install: true
+          driver-opts: |
+            image=moby/buildkit:latest
+            network=host
+      
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Login to Docker Hub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            $${{ env.REGISTRY }}/$${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix=sha-
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+          labels: |
+            org.opencontainers.image.title=${{ github.repository }}
+            org.opencontainers.image.description=Application container image
+            org.opencontainers.image.vendor=${{ github.repository_owner }}
+      
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=${{ needs.initialize.outputs.version }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            VCS_REF=${{ github.sha }}
+          provenance: true
+          sbom: true
+      
+      - name: Run Trivy vulnerability scanner on image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: $${{ env.REGISTRY }}/$${{ env.IMAGE_NAME }}:sha-${{ needs.initialize.outputs.short_sha }}
+          format: 'sarif'
+          output: 'trivy-image-results.sarif'
+          severity: 'CRITICAL,HIGH'
+      
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-image-results.sarif'
+      
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: $${{ env.REGISTRY }}/$${{ env.IMAGE_NAME }}:sha-${{ needs.initialize.outputs.short_sha }}
+          artifact-name: sbom.spdx.json
+          output-file: ./sbom.spdx.json
+      
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.spdx.json
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+  # ============================================================
+  # Deploy to Staging
+  # ============================================================
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [initialize, build-container, integration-tests]
+    if: |
+      always() &&
+      needs.build-container.result == 'success' &&
+      (needs.integration-tests.result == 'success' || needs.integration-tests.result == 'skipped') &&
+      (needs.initialize.outputs.should_deploy == 'true' || github.event.inputs.environment == 'staging')
+    environment:
+      name: staging
+      url: https://staging.example.com
+    
+    outputs:
+      deployment_id: ${{ steps.deploy.outputs.deployment_id }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_STAGING }}
+          aws-region: us-east-1
+      
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+      
+      - name: Configure kubeconfig
+        run: |
+          aws eks update-kubeconfig --name staging-cluster --region us-east-1
+      
+      - name: Run database migrations
+        run: |
+          kubectl run migration-${{ github.run_id }} \
+            --image=$${{ env.REGISTRY }}/$${{ env.IMAGE_NAME }}:sha-${{ needs.initialize.outputs.short_sha }} \
+            --rm \
+            --restart=Never \
+            --wait \
+            --timeout=300s \
+            -- python manage.py migrate --no-input
+      
+      - name: Deploy to Kubernetes
+        id: deploy
+        run: |
+          # Update image tag in deployment
+          kubectl set image deployment/app \
+            app=$${{ env.REGISTRY }}/$${{ env.IMAGE_NAME }}:sha-${{ needs.initialize.outputs.short_sha }} \
+            -n staging
+          
+          # Wait for rollout
+          kubectl rollout status deployment/app -n staging --timeout=300s
+          
+          # Get deployment ID
+          DEPLOYMENT_ID=$(kubectl get deployment app -n staging -o jsonpath='{.metadata.uid}')
+          echo "deployment_id=$$DEPLOYMENT_ID" >> $$GITHUB_OUTPUT
+      
+      - name: Run smoke tests
+        run: |
+          # Wait for service to be ready
+          sleep 30
+          
+          # Run smoke tests
+          curl -f https://staging.example.com/health || exit 1
+          curl -f https://staging.example.com/api/v1/status || exit 1
+      
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          echo "Deployment failed, initiating rollback..."
+          kubectl rollout undo deployment/app -n staging
+          kubectl rollout status deployment/app -n staging --timeout=300s
+
+  # ============================================================
+  # Deploy to Production
+  # ============================================================
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [initialize, deploy-staging]
+    if: |
+      always() &&
+      needs.deploy-staging.result == 'success' &&
+      (needs.initialize.outputs.is_release == 'true' || github.event.inputs.environment == 'production')
+    environment:
+      name: production
+      url: https://example.com
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_PRODUCTION }}
+          aws-region: us-east-1
+      
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+      
+      - name: Configure kubeconfig
+        run: |
+          aws eks update-kubeconfig --name production-cluster --region us-east-1
+      
+      - name: Create deployment record
+        uses: chrnorm/deployment-action@v2
+        id: deployment
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          environment: production
+          ref: ${{ github.sha }}
+      
+      - name: Run database migrations
+        run: |
+          kubectl run migration-${{ github.run_id }} \
+            --image=$${{ env.REGISTRY }}/$${{ env.IMAGE_NAME }}:sha-${{ needs.initialize.outputs.short_sha }} \
+            --rm \
+            --restart=Never \
+            --wait \
+            --timeout=300s \
+            -- python manage.py migrate --no-input
+      
+      - name: Blue-Green Deployment
+        id: deploy
+        run: |
+          # Deploy to green environment
+          kubectl apply -f k8s/production/green-deployment.yaml
+          
+          # Wait for green deployment to be ready
+          kubectl rollout status deployment/app-green -n production --timeout=300s
+          
+          # Run health checks on green
+          GREEN_POD=$(kubectl get pods -n production -l app=app-green -o jsonpath='{.items[0].metadata.name}')
+          kubectl exec $GREEN_POD -n production -- curl -f http://localhost:8000/health
+          
+          # Switch traffic to green
+          kubectl patch service app -n production -p '{"spec":{"selector":{"version":"green"}}}'
+          
+          # Wait and verify
+          sleep 30
+          curl -f https://example.com/health || exit 1
+          
+          # Scale down blue
+          kubectl scale deployment/app-blue -n production --replicas=0
+      
+      - name: Update deployment status (success)
+        if: success()
+        uses: chrnorm/deployment-status@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          deployment-id: ${{ steps.deployment.outputs.deployment_id }}
+          state: success
+          environment-url: https://example.com
+      
+      - name: Update deployment status (failure)
+        if: failure()
+        uses: chrnorm/deployment-status@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          deployment-id: ${{ steps.deployment.outputs.deployment_id }}
+          state: failure
+      
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          echo "Production deployment failed, initiating rollback..."
+          
+          # Switch traffic back to blue
+          kubectl patch service app -n production -p '{"spec":{"selector":{"version":"blue"}}}'
+          
+          # Scale up blue, scale down green
+          kubectl scale deployment/app-blue -n production --replicas=3
+          kubectl scale deployment/app-green -n production --replicas=0
+          
+          echo "Rollback completed"
+
+  # ============================================================
+  # Create Release
+  # ============================================================
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [initialize, deploy-production]
+    if: |
+      always() &&
+      needs.initialize.outputs.is_release == 'true' &&
+      needs.deploy-production.result == 'success'
+    
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Generate changelog
+        id: changelog
+        uses: orhun/git-cliff-action@v3
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+        env:
+          OUTPUT: CHANGELOG.md

@@ -317,12 +317,6 @@ runs:
         # Read Claude's response
         CLAUDE_DECISION=$(cat /tmp/claude_decision.json)
 
-        # #region agent log - DEBUG: Log raw Claude decision
-        echo "::group::DEBUG - Raw Claude Decision"
-        echo "$CLAUDE_DECISION"
-        echo "::endgroup::"
-        # #endregion
-
         # Validate JSON
         if ! echo "$CLAUDE_DECISION" | jq empty 2>/dev/null; then
           echo "Invalid JSON response from Claude"
@@ -337,14 +331,6 @@ runs:
         SHOULD_UPDATE_README=$(echo "$CLAUDE_DECISION" | jq -r '.should_update_readme')
         SHOULD_UPDATE_CLAUDE_MD=$(echo "$CLAUDE_DECISION" | jq -r '.should_update_claude_md')
         REASONING=$(echo "$CLAUDE_DECISION" | jq -r '.reasoning')
-
-        # #region agent log - DEBUG: Log extracted values
-        echo "::group::DEBUG - Extracted Values"
-        echo "SHOULD_UPDATE_README=$SHOULD_UPDATE_README"
-        echo "SHOULD_UPDATE_CLAUDE_MD=$SHOULD_UPDATE_CLAUDE_MD"
-        echo "REASONING=$REASONING"
-        echo "::endgroup::"
-        # #endregion
 
         echo "should_update_readme=$SHOULD_UPDATE_README" >> $GITHUB_OUTPUT
         echo "should_update_claude_md=$SHOULD_UPDATE_CLAUDE_MD" >> $GITHUB_OUTPUT
@@ -363,25 +349,12 @@ runs:
 
         echo "has_updates=true" >> $GITHUB_OUTPUT
 
-        # #region agent log - DEBUG: Confirm has_updates is set
-        echo "::group::DEBUG - has_updates Output"
-        echo "has_updates=true (set successfully)"
-        echo "::endgroup::"
-        # #endregion
-
         # Update files
         UPDATED_FILES=""
 
         if [ "$SHOULD_UPDATE_README" = "true" ]; then
           echo "Updating README.md..."
           README_CONTENT=$(echo "$CLAUDE_DECISION" | jq -r '.readme_content')
-
-          # #region agent log - DEBUG: Log README content length
-          echo "::group::DEBUG - README Content Check"
-          echo "README_CONTENT length: ${#README_CONTENT}"
-          echo "README_CONTENT first 200 chars: ${README_CONTENT:0:200}"
-          echo "::endgroup::"
-          # #endregion
 
           # Validate content is not empty
           if [ -z "$README_CONTENT" ] || [ "$README_CONTENT" = "null" ]; then
@@ -390,13 +363,6 @@ runs:
             echo "$README_CONTENT" > README.md
             UPDATED_FILES="README.md"
             echo "README.md updated"
-            
-            # #region agent log - DEBUG: Verify file was written
-            echo "::group::DEBUG - README.md Write Verification"
-            echo "File exists: $(test -f README.md && echo 'yes' || echo 'no')"
-            echo "File size: $(wc -c < README.md) bytes"
-            echo "::endgroup::"
-            # #endregion
           fi
         fi
 
@@ -420,35 +386,10 @@ runs:
 
         echo "files_updated=$UPDATED_FILES" >> $GITHUB_OUTPUT
 
-        # #region agent log - DEBUG: Final state
-        echo "::group::DEBUG - Final Update State"
-        echo "UPDATED_FILES=$UPDATED_FILES"
-        echo "Git status:"
-        git status --short
-        echo "::endgroup::"
-        # #endregion
-
         echo "## 📝 Files Updated" >> $GITHUB_STEP_SUMMARY
         echo "$UPDATED_FILES" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "**Reasoning:** $REASONING" >> $GITHUB_STEP_SUMMARY
-
-    # Step 6.5: Debug - Verify outputs before PR step
-    - name: Debug outputs before PR creation
-      id: debug-outputs
-      shell: bash
-      run: |
-        echo "::group::DEBUG - Step Outputs Verification"
-        echo "has_updates: ${{ steps.update-files.outputs.has_updates }}"
-        echo "files_updated: ${{ steps.update-files.outputs.files_updated }}"
-        echo "should_update_readme: ${{ steps.update-files.outputs.should_update_readme }}"
-        echo "should_update_claude_md: ${{ steps.update-files.outputs.should_update_claude_md }}"
-        echo "api_success: ${{ steps.analyze.outputs.api_success }}"
-        echo ""
-        echo "Condition check: steps.update-files.outputs.has_updates == 'true'"
-        echo "Actual value: '${{ steps.update-files.outputs.has_updates }}'"
-        echo "Will PR step run? $([ '${{ steps.update-files.outputs.has_updates }}' = 'true' ] && echo 'YES' || echo 'NO')"
-        echo "::endgroup::"
 
     # Step 7: Create Pull Request
     - name: Create pull request
@@ -466,42 +407,13 @@ runs:
 
         echo "Creating pull request..."
 
-        # #region agent log - DEBUG: Entry point and environment
-        echo "::group::DEBUG - PR Creation Entry"
-        echo "GH_TOKEN is set: $(test -n "$GH_TOKEN" && echo 'yes' || echo 'no')"
-        echo "BASE_BRANCH=$BASE_BRANCH"
-        echo "COMMIT_SHA=$COMMIT_SHA"
-        echo "REPOSITORY=$REPOSITORY"
-        echo "PR_URL=$PR_URL"
-        echo "has_updates from previous step: ${{ steps.update-files.outputs.has_updates }}"
-        echo "::endgroup::"
-        # #endregion
-
         # Configure git
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
 
-        # #region agent log - DEBUG: Git state before branch creation
-        echo "::group::DEBUG - Git State Before Branch"
-        echo "Current branch: $(git rev-parse --abbrev-ref HEAD)"
-        echo "Current commit: $(git rev-parse HEAD)"
-        echo "Git status:"
-        git status --short
-        echo "Modified files:"
-        git diff --name-only
-        echo "::endgroup::"
-        # #endregion
-
         # Create timestamped branch
         BRANCH="docs/auto-sync-$(date +%Y%m%d-%H%M%S)"
         git checkout -b "$BRANCH"
-
-        # #region agent log - DEBUG: After branch creation
-        echo "::group::DEBUG - After Branch Creation"
-        echo "New branch: $BRANCH"
-        echo "Current branch now: $(git rev-parse --abbrev-ref HEAD)"
-        echo "::endgroup::"
-        # #endregion
 
         # Get reasoning from previous step
         REASONING=$(cat /tmp/claude_decision.json | jq -r '.reasoning')
@@ -510,28 +422,9 @@ runs:
         # Stage changes
         git add README.md CLAUDE.md 2>/dev/null || true
 
-        # #region agent log - DEBUG: After staging
-        echo "::group::DEBUG - After git add"
-        echo "Staged files:"
-        git diff --cached --name-only
-        echo "Staged diff stats:"
-        git diff --cached --stat
-        echo "::endgroup::"
-        # #endregion
-
         # Check if there are changes to commit
         if git diff --cached --quiet; then
           echo "No changes to commit after staging"
-          # #region agent log - DEBUG: No changes detected
-          echo "::group::DEBUG - No Changes Issue"
-          echo "WARNING: git diff --cached --quiet returned true (no staged changes)"
-          echo "README.md exists: $(test -f README.md && echo 'yes' || echo 'no')"
-          echo "README.md size: $(wc -c < README.md 2>/dev/null || echo 'N/A') bytes"
-          echo "CLAUDE.md exists: $(test -f CLAUDE.md && echo 'yes' || echo 'no')"
-          echo "Full git status:"
-          git status
-          echo "::endgroup::"
-          # #endregion
           echo "pr_created=false" >> $GITHUB_OUTPUT
           exit 0
         fi
@@ -539,79 +432,28 @@ runs:
         # Commit
         git commit -m "docs: Auto-sync documentation for $COMMIT_SHA"
 
-        # #region agent log - DEBUG: After commit
-        echo "::group::DEBUG - After Commit"
-        echo "Commit created successfully"
-        echo "Latest commit: $(git log -1 --oneline)"
-        echo "::endgroup::"
-        # #endregion
-
         # Push branch
-        echo "Pushing branch $BRANCH to origin..."
-        git push origin "$BRANCH" 2>&1 || {
-          # #region agent log - DEBUG: Push failed
-          echo "::group::DEBUG - Push Failed"
-          echo "ERROR: git push failed"
-          echo "Remote URL: $(git remote get-url origin)"
-          echo "::endgroup::"
-          # #endregion
-          echo "pr_created=false" >> $GITHUB_OUTPUT
-          exit 1
-        }
+        git push origin "$BRANCH"
 
-        # #region agent log - DEBUG: After push
-        echo "::group::DEBUG - After Push"
-        echo "Branch pushed successfully"
-        echo "::endgroup::"
-        # #endregion
-
-        # Build PR body using printf for proper newline handling
+        # Build PR body
         FILES_LIST=$(echo "$FILES_UPDATED" | tr ',' '\n' | sed 's/^/- /')
-        
-        PR_BODY=$(printf '%s\n\n%s\n\n%s\n%s\n\n%s\n%s\n\n%s\n%s\n%s\n\n%s\n%s' \
-          "## 📚 Automated Documentation Sync" \
-          "This PR was automatically generated to keep documentation in sync with code changes." \
-          "### Files Updated" \
-          "$FILES_LIST" \
-          "### Analysis by Claude AI (Architect Engineer)" \
-          "$REASONING" \
-          "### Triggered By" \
-          "- Commit: \`${COMMIT_SHA}\`" \
-          "- Original PR: ${PR_URL}" \
-          "---" \
-          "🤖 *Generated by [doc_sync_agent](https://github.com/${REPOSITORY}/.github/actions/doc_sync_agent) | Powered by Claude AI*")
-
-        # #region agent log - DEBUG: Before PR creation
-        echo "::group::DEBUG - Before PR Creation"
-        echo "BASE_BRANCH for PR: $BASE_BRANCH"
-        echo "HEAD branch for PR: $BRANCH"
-        echo "PR_BODY length: ${#PR_BODY}"
-        echo "::endgroup::"
-        # #endregion
+        PR_BODY="## 📚 Automated Documentation Sync"
+        PR_BODY="${PR_BODY}\n\nThis PR was automatically generated to keep documentation in sync with code changes."
+        PR_BODY="${PR_BODY}\n\n### Files Updated\n${FILES_LIST}"
+        PR_BODY="${PR_BODY}\n\n### Analysis by Claude AI (Architect Engineer)\n${REASONING}"
+        PR_BODY="${PR_BODY}\n\n### Triggered By\n- Commit: \`${COMMIT_SHA}\`\n- Original PR: ${PR_URL}"
+        PR_BODY="${PR_BODY}\n\n---\n🤖 *Generated by [doc_sync_agent](https://github.com/${REPOSITORY}/.github/actions/doc_sync_agent) | Powered by Claude AI*"
 
         # Create PR
-        echo "Creating PR..."
         NEW_PR_URL=$(gh pr create \
           --title "📚 docs: Auto-sync documentation" \
           --body "$PR_BODY" \
           --base "$BASE_BRANCH" \
           --head "$BRANCH" 2>&1) || {
-          # #region agent log - DEBUG: PR creation failed
-          echo "::group::DEBUG - PR Creation Failed"
-          echo "ERROR: gh pr create failed"
-          echo "Output was: $NEW_PR_URL"
-          echo "::endgroup::"
-          # #endregion
           echo "Failed to create PR"
           echo "pr_created=false" >> $GITHUB_OUTPUT
           exit 1
         }
-
-        # #region agent log - DEBUG: PR created successfully
-        echo "::group::DEBUG - PR Created Successfully"
-        echo "NEW_PR_URL=$NEW_PR_URL"
-        echo "::endgroup::"
-        # #endregion
 
         # Extract PR number from URL
         PR_NUMBER=$(echo "$NEW_PR_URL" | grep -oE '[0-9]+$' || echo "")
@@ -642,17 +484,6 @@ runs:
         API_SUCCESS: ${{ steps.analyze.outputs.api_success }}
       run: |
         set -e
-
-        # #region agent log - DEBUG: Slack notification entry
-        echo "::group::DEBUG - Slack Notification Entry"
-        echo "PR_CREATED=$PR_CREATED"
-        echo "PR_URL=$PR_URL"
-        echo "HAS_UPDATES=$HAS_UPDATES"
-        echo "FILES_UPDATED=$FILES_UPDATED"
-        echo "SLACK_WEBHOOK_URL is set: $(test -n "$SLACK_WEBHOOK_URL" && echo 'yes' || echo 'no')"
-        echo "SLACK_USERS=$SLACK_USERS"
-        echo "::endgroup::"
-        # #endregion
 
         echo "Sending Slack notification..."
 
@@ -712,35 +543,14 @@ runs:
             ]
           }')
 
-        # #region agent log - DEBUG: Slack message built
-        echo "::group::DEBUG - Slack Message"
-        echo "SLACK_MESSAGE length: ${#SLACK_MESSAGE}"
-        echo "$SLACK_MESSAGE" | head -c 500
-        echo "::endgroup::"
-        # #endregion
-
         # Send to Slack
-        SLACK_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$SLACK_WEBHOOK_URL" \
+        curl -X POST "$SLACK_WEBHOOK_URL" \
           -H "Content-Type: application/json" \
-          -d "$SLACK_MESSAGE") || {
+          -d "$SLACK_MESSAGE" || {
           echo "Warning: Failed to send Slack notification"
         }
-        
-        HTTP_CODE=$(echo "$SLACK_RESPONSE" | tail -1)
-        RESPONSE_BODY=$(echo "$SLACK_RESPONSE" | sed '$d')
 
-        # #region agent log - DEBUG: Slack response
-        echo "::group::DEBUG - Slack Response"
-        echo "HTTP Code: $HTTP_CODE"
-        echo "Response: $RESPONSE_BODY"
-        echo "::endgroup::"
-        # #endregion
-
-        if [ "$HTTP_CODE" = "200" ]; then
-          echo "Slack notification sent successfully"
-        else
-          echo "Warning: Slack notification may have failed (HTTP $HTTP_CODE)"
-        fi
+        echo "Slack notification sent"
 
     # Step 9: Finalize and Set Status
     - name: Finalize

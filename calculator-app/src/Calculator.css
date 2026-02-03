@@ -1,0 +1,78 @@
+.calculator {
+  width: 320px;
+  margin: 50px auto;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+  background: #1e1e1e;
+}
+
+.calculator-display {
+  background: #2d2d2d;
+  color: #ffffff;
+  font-size: 2.5rem;
+  font-weight: 300;
+  text-align: right;
+  padding: 20px;
+  min-height: 80px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  word-wrap: break-word;
+  word-break: break-all;
+}
+
+.calculator-buttons {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  background: #000000;
+  padding: 1px;
+}
+
+.calculator-button {
+  background: #333333;
+  color: #ffffff;
+  border: none;
+  padding: 25px;
+  font-size: 1.5rem;
+  cursor: pointer;
+  transition: background 0.2s;
+  font-weight: 400;
+}
+
+.calculator-button:hover {
+  background: #4a4a4a;
+}
+
+.calculator-button:active {
+  background: #5a5a5a;
+}
+
+.calculator-button.function {
+  background: #a6a6a6;
+  color: #000000;
+  font-weight: 500;
+}
+
+.calculator-button.function:hover {
+  background: #b8b8b8;
+}
+
+.calculator-button.operator {
+  background: #ff9500;
+  color: #ffffff;
+  font-weight: 500;
+}
+
+.calculator-button.operator:hover {
+  background: #ffaa33;
+}
+
+.calculator-button.equals {
+  grid-column: span 2;
+}
+
+.calculator-button.zero {
+  grid-column: span 2;
+}

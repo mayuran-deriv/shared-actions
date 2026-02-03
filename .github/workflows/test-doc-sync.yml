@@ -1,18 +1,17 @@
-name: Test Doc Sync Agent
+name: DocSync AI - Documentation Sync
 
 on:
   push:
     branches:
       - master
       - main
-      - test  # Added for testing
-  workflow_dispatch:  # Allows manual triggering for testing
+  workflow_dispatch:  # Manual trigger for testing
 
 jobs:
-  test-doc-sync:
-    name: Test Documentation Sync
+  doc-sync:
+    name: Sync Documentation
     runs-on: ubuntu-latest
-
+    
     permissions:
       contents: write
       pull-requests: write
@@ -20,14 +19,17 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 50
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Run Doc Sync Agent
-        uses: ./.github/actions/doc_sync_agent  # Uses local version
+      - name: Run DocSync AI
+        uses: ./.github/actions/doc_sync_agent
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_DOCSYNC }}
-          slack_users_to_tag: ${{ secrets.SLACK_USERS_TO_TAG }}  # Optional
+          slack_users_to_tag: ${{ secrets.SLACK_USERS_TO_TAG }}
           repository: ${{ github.repository }}
           commit_sha: ${{ github.sha }}
           base_branch: ${{ github.ref_name }}

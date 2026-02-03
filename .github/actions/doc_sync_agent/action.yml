@@ -1,19 +1,20 @@
-name: 'Doc Sync Agent'
-description: 'Automatically sync documentation (README.md, CLAUDE.md) when code changes are merged'
+name: 'DocSync AI'
+description: 'AI-powered documentation sync agent that monitors PR merges and creates documentation update PRs when needed'
 author: 'Deriv'
 
 inputs:
   github_token:
-    description: 'GitHub PAT with contents:write and pull-requests:write permissions'
+    description: 'GitHub token with contents:write and pull-requests:write permissions'
     required: true
   anthropic_api_key:
-    description: 'Anthropic API key for Claude'
+    description: 'Anthropic API key for Claude AI'
     required: true
   slack_webhook_url:
-    description: 'Slack webhook URL for #docsync_private channel'
-    required: true
+    description: 'Slack webhook URL for notifications'
+    required: false
+    default: ''
   slack_users_to_tag:
-    description: 'Comma-separated Slack user IDs to tag in notifications (e.g., U123ABC,U456DEF)'
+    description: 'Comma-separated Slack user IDs to tag (e.g., U123ABC,U456DEF)'
     required: false
     default: ''
   repository:
@@ -23,17 +24,13 @@ inputs:
     description: 'Commit SHA that triggered this workflow'
     required: true
   base_branch:
-    description: 'Base branch name (main or test)'
+    description: 'Base branch name (main or master)'
     required: false
-    default: 'test'
-  docs_to_check:
-    description: 'Comma-separated list of documentation files to check'
-    required: false
-    default: 'README.md,CLAUDE.md'
+    default: 'master'
 
 outputs:
   pr_created:
-    description: 'Whether a PR was created (true/false)'
+    description: 'Whether a documentation PR was created (true/false)'
     value: ${{ steps.create-pr.outputs.pr_created }}
   pr_url:
     description: 'URL of the created PR (if any)'
@@ -42,654 +39,446 @@ outputs:
     description: 'Number of the created PR (if any)'
     value: ${{ steps.create-pr.outputs.pr_number }}
   files_updated:
-    description: 'Comma-separated list of files updated'
-    value: ${{ steps.update-files.outputs.files_updated }}
-  claude_reasoning:
-    description: "Claude's reasoning for the decision"
+    description: 'Documentation files that were updated'
+    value: ${{ steps.create-pr.outputs.files_updated }}
+  reasoning:
+    description: "Claude AI's reasoning for the decision"
     value: ${{ steps.analyze.outputs.reasoning }}
   status:
-    description: 'Overall status (success/skipped/failed)'
+    description: 'Overall status (success/skipped/error)'
     value: ${{ steps.finalize.outputs.status }}
 
 runs:
   using: 'composite'
   steps:
-    # Step 1: Checkout Repository
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 50
-        token: ${{ inputs.github_token }}
-
-    # Step 2: Extract PR Context
-    - name: Extract PR context
-      id: pr-info
+    # Step 1: Setup - Configure git and get PR context
+    - name: Setup and extract context
+      id: setup
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github_token }}
         COMMIT_SHA: ${{ inputs.commit_sha }}
       run: |
         set -e
-
-        echo "Extracting PR information for commit: $COMMIT_SHA"
-
-        # Find merged PR from commit SHA
-        PR_INFO=$(gh pr list --search "$COMMIT_SHA" --state merged --json number,title,url --jq '.[0]' || echo '{}')
-
+        
+        echo "🔧 Configuring git..."
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        
+        echo "📋 Extracting PR information..."
+        PR_INFO=$(gh pr list --search "$COMMIT_SHA" --state merged --json number,title,url --jq '.[0]' 2>/dev/null || echo '{}')
+        
         PR_NUMBER=$(echo "$PR_INFO" | jq -r '.number // "N/A"')
         PR_TITLE=$(echo "$PR_INFO" | jq -r '.title // "Direct commit"')
         PR_URL=$(echo "$PR_INFO" | jq -r '.url // "N/A"')
-
+        
         echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
-        echo "pr_title=$PR_TITLE" >> $GITHUB_OUTPUT
+        echo "pr_title=$PR_TITLE" >> $GITHUB_OUTPUT  
         echo "pr_url=$PR_URL" >> $GITHUB_OUTPUT
+        
+        echo "## 📋 DocSync AI Analysis" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Trigger:** PR #$PR_NUMBER - $PR_TITLE" >> $GITHUB_STEP_SUMMARY
+        echo "**Commit:** \`$COMMIT_SHA\`" >> $GITHUB_STEP_SUMMARY
 
-        echo "## PR Information" >> $GITHUB_STEP_SUMMARY
-        echo "- PR Number: $PR_NUMBER" >> $GITHUB_STEP_SUMMARY
-        echo "- PR Title: $PR_TITLE" >> $GITHUB_STEP_SUMMARY
-        echo "- Commit: $COMMIT_SHA" >> $GITHUB_STEP_SUMMARY
-
-    # Step 3: Generate Diff
-    - name: Generate diff context
-      id: diff-context
+    # Step 2: Gather context - Get diff and current documentation
+    - name: Gather repository context
+      id: context
       shell: bash
       run: |
         set -e
-
-        echo "Generating diff context..."
-
-        # Determine if this is a merge commit
+        
+        echo "📊 Generating diff..."
+        
+        # Get the diff from the merge
         if git rev-parse --verify HEAD^2 2>/dev/null; then
-          echo "Detected merge commit"
           MERGE_BASE=$(git merge-base HEAD~1 HEAD)
           DIFF=$(git diff "$MERGE_BASE" HEAD 2>/dev/null || git diff HEAD~1 HEAD)
         else
-          echo "Regular commit, comparing with previous"
-          DIFF=$(git diff HEAD~1 HEAD 2>/dev/null || echo "No diff available")
+          DIFF=$(git diff HEAD~1 HEAD 2>/dev/null || echo "")
         fi
-
-        # Filter noise (exclude lock files, binary files, and limit size)
-        FILTERED_DIFF=$(echo "$DIFF" | grep -v "package-lock.json" | grep -v "yarn.lock" | grep -v "pnpm-lock.yaml" | grep -v ".lock" | head -n 5000)
-
-        # Count changed files
-        CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null | wc -l)
-
-        echo "changed_files=$CHANGED_FILES" >> $GITHUB_OUTPUT
-
-        # Save diff to file for next step
-        echo "$FILTERED_DIFF" > /tmp/code_diff.txt
-
-        echo "## Code Changes" >> $GITHUB_STEP_SUMMARY
-        echo "- Changed files: $CHANGED_FILES" >> $GITHUB_STEP_SUMMARY
-        echo "- Diff size: $(echo "$FILTERED_DIFF" | wc -l) lines" >> $GITHUB_STEP_SUMMARY
-
-    # Step 4: Read Current Documentation
-    - name: Read current documentation
-      id: read-docs
-      shell: bash
-      run: |
-        set -e
-
-        echo "Reading current documentation..."
-
+        
+        # Filter out noise (lock files, etc.) and limit size
+        FILTERED_DIFF=$(echo "$DIFF" | grep -v -E "(package-lock|yarn\.lock|pnpm-lock|\.lock)" | head -n 4000)
+        
+        # Get list of changed files
+        CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
+        CHANGED_COUNT=$(echo "$CHANGED_FILES" | grep -c . || echo "0")
+        
+        echo "changed_count=$CHANGED_COUNT" >> $GITHUB_OUTPUT
+        
+        # Save diff to temp file
+        echo "$FILTERED_DIFF" > /tmp/diff.txt
+        
+        echo "📚 Reading current documentation..."
+        
         # Read README.md
         if [ -f "README.md" ]; then
-          README_CONTENT=$(cat README.md)
-          README_EXISTS="true"
+          cat README.md > /tmp/readme.txt
+          echo "readme_exists=true" >> $GITHUB_OUTPUT
         else
-          README_CONTENT=""
-          README_EXISTS="false"
+          echo "" > /tmp/readme.txt
+          echo "readme_exists=false" >> $GITHUB_OUTPUT
         fi
-
-        # Read CLAUDE.md
+        
+        # Read CLAUDE.md  
         if [ -f "CLAUDE.md" ]; then
-          CLAUDE_MD_CONTENT=$(cat CLAUDE.md)
-          CLAUDE_MD_EXISTS="true"
+          cat CLAUDE.md > /tmp/claude_md.txt
+          echo "claude_md_exists=true" >> $GITHUB_OUTPUT
         else
-          CLAUDE_MD_CONTENT=""
-          CLAUDE_MD_EXISTS="false"
+          echo "" > /tmp/claude_md.txt
+          echo "claude_md_exists=false" >> $GITHUB_OUTPUT
         fi
+        
+        # Get repository file structure for context
+        echo "📁 Getting repository structure..."
+        find . -type f -name "*.py" -o -name "*.js" -o -name "*.ts" -o -name "*.go" -o -name "*.java" -o -name "*.rs" -o -name "*.yml" -o -name "*.yaml" 2>/dev/null | grep -v node_modules | grep -v __pycache__ | grep -v .git | head -100 > /tmp/file_structure.txt || true
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Changed files:** $CHANGED_COUNT" >> $GITHUB_STEP_SUMMARY
+        echo "**README.md exists:** ${{ steps.context.outputs.readme_exists || 'checking...' }}" >> $GITHUB_STEP_SUMMARY
+        echo "**CLAUDE.md exists:** ${{ steps.context.outputs.claude_md_exists || 'checking...' }}" >> $GITHUB_STEP_SUMMARY
 
-        echo "readme_exists=$README_EXISTS" >> $GITHUB_OUTPUT
-        echo "claude_md_exists=$CLAUDE_MD_EXISTS" >> $GITHUB_OUTPUT
-
-        # Save content to files
-        echo "$README_CONTENT" > /tmp/current_readme.txt
-        echo "$CLAUDE_MD_CONTENT" > /tmp/current_claude_md.txt
-
-        echo "## Current Documentation" >> $GITHUB_STEP_SUMMARY
-        echo "- README.md exists: $README_EXISTS" >> $GITHUB_STEP_SUMMARY
-        echo "- CLAUDE.md exists: $CLAUDE_MD_EXISTS" >> $GITHUB_STEP_SUMMARY
-
-    # Step 5: Analyze with Claude AI
-    - name: Analyze with Claude AI
+    # Step 3: Analyze with Claude AI
+    - name: Analyze changes with Claude AI
       id: analyze
       shell: bash
       env:
         ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
         REPOSITORY: ${{ inputs.repository }}
-        PR_TITLE: ${{ steps.pr-info.outputs.pr_title }}
-        COMMIT_SHA: ${{ inputs.commit_sha }}
+        PR_TITLE: ${{ steps.setup.outputs.pr_title }}
       run: |
         set -e
-
-        echo "Calling Claude AI for analysis..."
-
-        # Read prepared files
-        DIFF_CONTENT=$(cat /tmp/code_diff.txt)
-        README_CONTENT=$(cat /tmp/current_readme.txt)
-        CLAUDE_MD_CONTENT=$(cat /tmp/current_claude_md.txt)
-
-        # Build system prompt
-        SYSTEM_PROMPT="You are an expert software architect and technical writer with deep expertise in:
-        - Understanding code architecture and impact analysis
-        - Technical writing and documentation best practices
-        - Identifying when changes affect public APIs, workflows, or user-facing features
-        - Creating clear, comprehensive documentation that follows existing style and structure
-
-        Your role is to analyze code changes and determine if project documentation needs to be updated. You make intelligent decisions about what warrants documentation updates and generate high-quality content when needed.
-
-        GUIDELINES FOR UPDATES:
-        - UPDATE documentation when changes affect: new features, API changes, configuration options, setup instructions, usage patterns, or significant workflow changes
-        - SKIP updates for: minor bug fixes, typo corrections, code formatting, internal refactoring that doesn't change behavior, test-only changes
         
-        When in doubt, lean toward updating if the change would help users understand or use the project better."
+        echo "🤖 Analyzing with Claude AI..."
+        
+        DIFF_CONTENT=$(cat /tmp/diff.txt)
+        README_CONTENT=$(cat /tmp/readme.txt)
+        CLAUDE_MD_CONTENT=$(cat /tmp/claude_md.txt)
+        FILE_STRUCTURE=$(cat /tmp/file_structure.txt)
+        
+        # Build the prompt for Claude
+        SYSTEM_PROMPT='You are DocSync AI, an expert at analyzing code changes and determining if documentation needs to be updated.
 
-        # Build user prompt
+Your task is to analyze code changes and decide if README.md or CLAUDE.md need updates.
+
+CRITICAL RULES:
+1. ONLY update documentation files (README.md, CLAUDE.md) - never suggest changes to code files
+2. PRESERVE existing documentation structure and content - only modify sections that need updating
+3. Make MINIMAL, TARGETED changes - do not rewrite entire documents
+4. If no update is needed, clearly say so
+
+When to UPDATE documentation:
+- New features or functionality added
+- API changes (new endpoints, parameters, return values)
+- Configuration or setup changes
+- Usage pattern changes
+- New dependencies that users need to know about
+- Significant architectural changes
+
+When to SKIP documentation updates:
+- Bug fixes that do not change documented behavior
+- Internal refactoring with no external impact
+- Code style/formatting changes
+- Test file changes only
+- Minor performance optimizations'
+
         USER_PROMPT="Repository: $REPOSITORY
-        Merged PR/Commit: $PR_TITLE
-        Commit SHA: $COMMIT_SHA
+PR/Commit: $PR_TITLE
 
-        ## Code Changes
-        \`\`\`diff
-        $DIFF_CONTENT
-        \`\`\`
+## Code Changes (Diff)
+\`\`\`diff
+$DIFF_CONTENT
+\`\`\`
 
-        ## Current Documentation
+## Repository File Structure
+\`\`\`
+$FILE_STRUCTURE
+\`\`\`
 
-        ### Current README.md
-        $(if [ -n "$README_CONTENT" ]; then echo "\`\`\`markdown"; echo "$README_CONTENT"; echo "\`\`\`"; else echo "(File does not exist)"; fi)
+## Current README.md
+$(if [ -n "$README_CONTENT" ]; then echo '```markdown'; echo "$README_CONTENT"; echo '```'; else echo '(Does not exist)'; fi)
 
-        ### Current CLAUDE.md
-        $(if [ -n "$CLAUDE_MD_CONTENT" ]; then echo "\`\`\`markdown"; echo "$CLAUDE_MD_CONTENT"; echo "\`\`\`"; else echo "(File does not exist)"; fi)
+## Current CLAUDE.md
+$(if [ -n "$CLAUDE_MD_CONTENT" ]; then echo '```markdown'; echo "$CLAUDE_MD_CONTENT"; echo '```'; else echo '(Does not exist)'; fi)
 
-        ## Your Task
-        Analyze the code changes and determine:
-        1. Do these changes require README.md updates? Consider:
-           - New features or functionality
-           - Changes to setup/installation instructions
-           - API or usage changes
-           - Configuration changes
-           - Dependency changes that affect users
+## Instructions
+Analyze the code changes and determine:
+1. Does README.md need to be updated? If yes, provide the COMPLETE updated content.
+2. Does CLAUDE.md need to be updated? If yes, provide the COMPLETE updated content.
 
-        2. Do these changes require CLAUDE.md updates? Consider:
-           - AI/LLM integration changes
-           - Claude-specific workflows or prompts
-           - Architecture changes relevant to AI assistants
-           - Development guidelines for AI tools
+IMPORTANT: 
+- Preserve existing content and structure
+- Only modify sections affected by the changes
+- Keep the same formatting style
 
-        3. If yes to either, generate the COMPLETE updated content (not diffs)
+Respond with ONLY valid JSON (no markdown code blocks):
+{
+  \"update_readme\": true/false,
+  \"update_claude_md\": true/false,
+  \"readme_content\": \"full updated README.md content or empty string\",
+  \"claude_md_content\": \"full updated CLAUDE.md content or empty string\",
+  \"reasoning\": \"Brief explanation (2-3 sentences) of what changed and why documentation does/doesn't need updating\"
+}"
 
-        ## Response Format
-        Respond ONLY with valid JSON in this exact structure (no markdown code blocks, just raw JSON):
-        {
-          \"should_update_readme\": boolean,
-          \"should_update_claude_md\": boolean,
-          \"readme_content\": \"complete updated README.md content (only if should_update_readme is true, otherwise empty string)\",
-          \"claude_md_content\": \"complete updated CLAUDE.md content (only if should_update_claude_md is true, otherwise empty string)\",
-          \"reasoning\": \"Brief explanation of your decisions (2-4 sentences)\"
-        }
-
-        ## Important Guidelines
-        - Preserve existing formatting style and structure exactly
-        - If files don't exist, create them if the project would benefit from documentation
-        - Generate complete file content, not partial updates or diffs
-        - Focus on making documentation accurate and helpful for users
-        
-        ## SKIP Documentation Updates For:
-        - Pure bug fixes that don't change documented behavior
-        - Code formatting or style changes
-        - Internal refactoring with no external impact
-        - Test file changes only"
-
-        # Call Claude API with timeout
-        echo "Calling Claude API..."
-        RESPONSE=$(timeout 120s curl -s -X POST "https://api.anthropic.com/v1/messages" \
+        # Call Claude API
+        RESPONSE=$(curl -s -X POST "https://api.anthropic.com/v1/messages" \
           -H "x-api-key: $ANTHROPIC_API_KEY" \
           -H "anthropic-version: 2023-06-01" \
           -H "content-type: application/json" \
+          --max-time 120 \
           -d "$(jq -n \
             --arg system "$SYSTEM_PROMPT" \
             --arg user "$USER_PROMPT" \
             '{
-              "model": "claude-3-7-sonnet-latest",
+              "model": "claude-sonnet-4-20250514",
               "max_tokens": 8000,
-              "temperature": 0.3,
+              "temperature": 0.2,
               "system": $system,
-              "messages": [{
-                "role": "user",
-                "content": $user
-              }]
-            }')" || {
-          echo "Claude API call failed or timed out"
-          echo "api_success=false" >> $GITHUB_OUTPUT
-          exit 1
-        })
-
-        # Check for API errors
-        ERROR_MSG=$(echo "$RESPONSE" | jq -r '.error.message // empty')
-        if [ -n "$ERROR_MSG" ]; then
-          echo "Claude API error: $ERROR_MSG"
-          echo "api_success=false" >> $GITHUB_OUTPUT
-          echo "error_message=$ERROR_MSG" >> $GITHUB_OUTPUT
+              "messages": [{"role": "user", "content": $user}]
+            }')")
+        
+        # Check for errors
+        ERROR=$(echo "$RESPONSE" | jq -r '.error.message // empty')
+        if [ -n "$ERROR" ]; then
+          echo "❌ Claude API error: $ERROR"
+          echo "success=false" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ❌ Error" >> $GITHUB_STEP_SUMMARY
+          echo "Claude API error: $ERROR" >> $GITHUB_STEP_SUMMARY
           exit 1
         fi
-
-        # Extract content from response
-        CLAUDE_DECISION=$(echo "$RESPONSE" | jq -r '.content[0].text')
-
-        # Save to file
-        echo "$CLAUDE_DECISION" > /tmp/claude_decision.json
-
-        echo "api_success=true" >> $GITHUB_OUTPUT
         
-        # #region agent log - Hypothesis E: Log Claude's full decision
-        echo "[DEBUG][HypE] Claude's full decision:"
-        cat /tmp/claude_decision.json
-        echo ""
-        # #endregion
+        # Extract Claude's decision
+        DECISION=$(echo "$RESPONSE" | jq -r '.content[0].text')
+        echo "$DECISION" > /tmp/decision.json
         
-        echo "## Claude AI Analysis Complete" >> $GITHUB_STEP_SUMMARY
-
-    # Step 6: Parse Decision & Update Files
-    - name: Parse decision and update files
-      id: update-files
-      shell: bash
-      run: |
-        set -e
-
-        # #region agent log - Hypothesis A/B: Check if claude_decision.json exists and has content
-        echo "[DEBUG][HypA] Checking /tmp/claude_decision.json exists: $(test -f /tmp/claude_decision.json && echo 'YES' || echo 'NO')"
-        echo "[DEBUG][HypA] File size: $(wc -c < /tmp/claude_decision.json 2>/dev/null || echo 'N/A')"
-        # #endregion
-
-        echo "Parsing Claude's decision..."
-
-        # Read Claude's response
-        CLAUDE_DECISION=$(cat /tmp/claude_decision.json)
-
         # Validate JSON
-        if ! echo "$CLAUDE_DECISION" | jq empty 2>/dev/null; then
-          echo "Invalid JSON response from Claude"
-          echo "valid_json=false" >> $GITHUB_OUTPUT
-          echo "Response: $CLAUDE_DECISION"
+        if ! jq empty /tmp/decision.json 2>/dev/null; then
+          echo "❌ Invalid JSON response from Claude"
+          echo "Response: $DECISION"
+          echo "success=false" >> $GITHUB_OUTPUT
           exit 1
         fi
-
-        echo "valid_json=true" >> $GITHUB_OUTPUT
-
-        # Extract decision
-        SHOULD_UPDATE_README=$(echo "$CLAUDE_DECISION" | jq -r '.should_update_readme')
-        SHOULD_UPDATE_CLAUDE_MD=$(echo "$CLAUDE_DECISION" | jq -r '.should_update_claude_md')
-        REASONING=$(echo "$CLAUDE_DECISION" | jq -r '.reasoning')
-
-        # #region agent log - Hypothesis A: Log parsed values
-        echo "[DEBUG][HypA] SHOULD_UPDATE_README='$SHOULD_UPDATE_README'"
-        echo "[DEBUG][HypA] SHOULD_UPDATE_CLAUDE_MD='$SHOULD_UPDATE_CLAUDE_MD'"
-        echo "[DEBUG][HypA] REASONING length: ${#REASONING}"
-        # #endregion
-
-        echo "should_update_readme=$SHOULD_UPDATE_README" >> $GITHUB_OUTPUT
-        echo "should_update_claude_md=$SHOULD_UPDATE_CLAUDE_MD" >> $GITHUB_OUTPUT
+        
+        # Parse decision
+        UPDATE_README=$(jq -r '.update_readme' /tmp/decision.json)
+        UPDATE_CLAUDE_MD=$(jq -r '.update_claude_md' /tmp/decision.json)
+        REASONING=$(jq -r '.reasoning' /tmp/decision.json)
+        
+        echo "success=true" >> $GITHUB_OUTPUT
+        echo "update_readme=$UPDATE_README" >> $GITHUB_OUTPUT
+        echo "update_claude_md=$UPDATE_CLAUDE_MD" >> $GITHUB_OUTPUT
         echo "reasoning<<EOF" >> $GITHUB_OUTPUT
         echo "$REASONING" >> $GITHUB_OUTPUT
         echo "EOF" >> $GITHUB_OUTPUT
-
-        # Check if any updates needed
-        if [ "$SHOULD_UPDATE_README" = "false" ] && [ "$SHOULD_UPDATE_CLAUDE_MD" = "false" ]; then
-          echo "No documentation updates needed"
-          # #region agent log - Hypothesis A: No updates branch
-          echo "[DEBUG][HypA] Exiting early - no updates needed"
-          # #endregion
-          echo "has_updates=false" >> $GITHUB_OUTPUT
-          echo "## ✅ No Updates Needed" >> $GITHUB_STEP_SUMMARY
-          echo "$REASONING" >> $GITHUB_STEP_SUMMARY
-          exit 0
-        fi
-
-        # #region agent log - Hypothesis A: Updates needed branch
-        echo "[DEBUG][HypA] Updates ARE needed, setting has_updates=true"
-        # #endregion
-        echo "has_updates=true" >> $GITHUB_OUTPUT
-
-        # Update files
-        UPDATED_FILES=""
-
-        if [ "$SHOULD_UPDATE_README" = "true" ]; then
-          echo "Updating README.md..."
-          README_CONTENT=$(echo "$CLAUDE_DECISION" | jq -r '.readme_content')
-
-          # #region agent log - Hypothesis B: Check README content
-          echo "[DEBUG][HypB] README_CONTENT length: ${#README_CONTENT}"
-          echo "[DEBUG][HypB] README_CONTENT first 100 chars: ${README_CONTENT:0:100}"
-          # #endregion
-
-          # Validate content is not empty
-          if [ -z "$README_CONTENT" ] || [ "$README_CONTENT" = "null" ]; then
-            echo "Warning: README content is empty, skipping"
-            # #region agent log - Hypothesis B: Empty content
-            echo "[DEBUG][HypB] README content validation FAILED - empty or null"
-            # #endregion
-          else
-            echo "$README_CONTENT" > README.md
-            UPDATED_FILES="README.md"
-            echo "README.md updated"
-            # #region agent log - Hypothesis B: File written
-            echo "[DEBUG][HypB] README.md written successfully, file size: $(wc -c < README.md)"
-            # #endregion
-          fi
-        fi
-
-        if [ "$SHOULD_UPDATE_CLAUDE_MD" = "true" ]; then
-          echo "Updating CLAUDE.md..."
-          CLAUDE_MD_CONTENT=$(echo "$CLAUDE_DECISION" | jq -r '.claude_md_content')
-
-          # Validate content is not empty
-          if [ -z "$CLAUDE_MD_CONTENT" ] || [ "$CLAUDE_MD_CONTENT" = "null" ]; then
-            echo "Warning: CLAUDE.md content is empty, skipping"
-          else
-            echo "$CLAUDE_MD_CONTENT" > CLAUDE.md
-            if [ -n "$UPDATED_FILES" ]; then
-              UPDATED_FILES="$UPDATED_FILES,CLAUDE.md"
-            else
-              UPDATED_FILES="CLAUDE.md"
-            fi
-            echo "CLAUDE.md updated"
-          fi
-        fi
-
-        # #region agent log - Hypothesis A/B: Final state
-        echo "[DEBUG][HypA] Final UPDATED_FILES='$UPDATED_FILES'"
-        echo "[DEBUG][HypA] Setting files_updated output now"
-        # #endregion
-        echo "files_updated=$UPDATED_FILES" >> $GITHUB_OUTPUT
-
-        echo "## 📝 Files Updated" >> $GITHUB_STEP_SUMMARY
-        echo "$UPDATED_FILES" >> $GITHUB_STEP_SUMMARY
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 🤖 Claude AI Analysis" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Update README.md:** $UPDATE_README" >> $GITHUB_STEP_SUMMARY
+        echo "**Update CLAUDE.md:** $UPDATE_CLAUDE_MD" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "**Reasoning:** $REASONING" >> $GITHUB_STEP_SUMMARY
 
-    # Step 7: Create Pull Request
-    - name: Create pull request
+    # Step 4: Create PR with documentation updates
+    - name: Create documentation PR
       id: create-pr
-      if: steps.update-files.outputs.has_updates == 'true'
+      if: steps.analyze.outputs.success == 'true' && (steps.analyze.outputs.update_readme == 'true' || steps.analyze.outputs.update_claude_md == 'true')
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github_token }}
         BASE_BRANCH: ${{ inputs.base_branch }}
         COMMIT_SHA: ${{ inputs.commit_sha }}
         REPOSITORY: ${{ inputs.repository }}
-        PR_URL: ${{ steps.pr-info.outputs.pr_url }}
+        ORIGINAL_PR_URL: ${{ steps.setup.outputs.pr_url }}
+        UPDATE_README: ${{ steps.analyze.outputs.update_readme }}
+        UPDATE_CLAUDE_MD: ${{ steps.analyze.outputs.update_claude_md }}
       run: |
         set -e
-
-        # #region agent log - Hypothesis C: Step 7 entered
-        echo "[DEBUG][HypC] Step 7 (Create PR) STARTED"
-        echo "[DEBUG][HypC] has_updates condition passed, proceeding with PR creation"
-        echo "[DEBUG][HypC] BASE_BRANCH='$BASE_BRANCH'"
-        echo "[DEBUG][HypC] REPOSITORY='$REPOSITORY'"
-        # #endregion
-
-        echo "Creating pull request..."
-
-        # Configure git
-        git config user.name "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
-
-        # Create timestamped branch
-        BRANCH="docs/auto-sync-$(date +%Y%m%d-%H%M%S)"
-        git checkout -b "$BRANCH"
-
-        # #region agent log - Hypothesis C: Branch created
-        echo "[DEBUG][HypC] Created branch: $BRANCH"
-        echo "[DEBUG][HypC] Current git status:"
-        git status
-        # #endregion
-
-        # Get reasoning from previous step
-        REASONING=$(cat /tmp/claude_decision.json | jq -r '.reasoning')
-        FILES_UPDATED="${{ steps.update-files.outputs.files_updated }}"
-
-        # #region agent log - Hypothesis C: Check files before staging
-        echo "[DEBUG][HypC] FILES_UPDATED='$FILES_UPDATED'"
-        echo "[DEBUG][HypC] README.md exists: $(test -f README.md && echo 'YES' || echo 'NO')"
-        echo "[DEBUG][HypC] CLAUDE.md exists: $(test -f CLAUDE.md && echo 'YES' || echo 'NO')"
-        echo "[DEBUG][HypC] Git diff before staging:"
-        git diff --name-only || echo "No diff"
-        # #endregion
-
-        # #region agent log - Hypothesis F: Debug git add
-        echo "[DEBUG][HypF] Current working directory: $(pwd)"
-        echo "[DEBUG][HypF] Listing files in current dir:"
-        ls -la README.md CLAUDE.md 2>&1 || echo "Some files missing"
-        echo "[DEBUG][HypF] Git status before add:"
-        git status --short
-        echo "[DEBUG][HypF] README.md content (first 5 lines):"
-        head -5 README.md
-        echo "[DEBUG][HypF] Git diff of README.md:"
-        git diff README.md | head -30
-        # #endregion
-
-        # Stage changes - add files individually to see which one fails
-        echo "[DEBUG][HypF] Running: git add README.md"
-        git add README.md 
-        ADD_EXIT_CODE=$?
-        echo "[DEBUG][HypF] git add README.md exit code: $ADD_EXIT_CODE"
         
-        if [ -f CLAUDE.md ]; then
-          echo "[DEBUG][HypF] Running: git add CLAUDE.md"
-          git add CLAUDE.md && echo "[DEBUG][HypF] git add CLAUDE.md SUCCESS" || echo "[DEBUG][HypF] git add CLAUDE.md FAILED"
+        echo "📝 Creating documentation update PR..."
+        
+        # Create a new branch
+        BRANCH="docs/docsync-$(date +%Y%m%d-%H%M%S)"
+        git checkout -b "$BRANCH"
+        
+        UPDATED_FILES=""
+        
+        # Update README.md if needed
+        if [ "$UPDATE_README" = "true" ]; then
+          README_CONTENT=$(jq -r '.readme_content' /tmp/decision.json)
+          if [ -n "$README_CONTENT" ] && [ "$README_CONTENT" != "null" ] && [ "$README_CONTENT" != "" ]; then
+            printf '%s\n' "$README_CONTENT" > README.md
+            git add README.md
+            UPDATED_FILES="README.md"
+            echo "✅ README.md updated"
+          fi
+        fi
+        
+        # Update CLAUDE.md if needed
+        if [ "$UPDATE_CLAUDE_MD" = "true" ]; then
+          CLAUDE_CONTENT=$(jq -r '.claude_md_content' /tmp/decision.json)
+          if [ -n "$CLAUDE_CONTENT" ] && [ "$CLAUDE_CONTENT" != "null" ] && [ "$CLAUDE_CONTENT" != "" ]; then
+            printf '%s\n' "$CLAUDE_CONTENT" > CLAUDE.md
+            git add CLAUDE.md
+            if [ -n "$UPDATED_FILES" ]; then
+              UPDATED_FILES="$UPDATED_FILES, CLAUDE.md"
+            else
+              UPDATED_FILES="CLAUDE.md"
+            fi
+            echo "✅ CLAUDE.md updated"
+          fi
+        fi
+        
+        # Check if there are actual changes to commit
+        if ! git diff --cached --quiet; then
+          REASONING=$(jq -r '.reasoning' /tmp/decision.json)
+          
+          # Commit changes
+          git commit -m "docs: Automated documentation sync
+
+Updated: $UPDATED_FILES
+
+Triggered by: $COMMIT_SHA
+Reasoning: $REASONING"
+          
+          # Push branch
+          git push origin "$BRANCH"
+          
+          # Create PR
+          PR_BODY="## 📚 Automated Documentation Update
+
+This PR was automatically generated by **DocSync AI** to keep documentation in sync with code changes.
+
+### Files Updated
+$(echo "$UPDATED_FILES" | tr ',' '\n' | sed 's/^/- /')
+
+### Why This Update?
+$REASONING
+
+### Triggered By
+- **Commit:** \`$COMMIT_SHA\`
+- **Original PR:** $ORIGINAL_PR_URL
+
+---
+*🤖 Generated by DocSync AI | Powered by Claude*"
+
+          PR_URL=$(gh pr create \
+            --title "📚 docs: Automated documentation update" \
+            --body "$PR_BODY" \
+            --base "$BASE_BRANCH" \
+            --head "$BRANCH")
+          
+          PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
+          
+          echo "pr_created=true" >> $GITHUB_OUTPUT
+          echo "pr_url=$PR_URL" >> $GITHUB_OUTPUT
+          echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+          echo "files_updated=$UPDATED_FILES" >> $GITHUB_OUTPUT
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ✅ Documentation PR Created" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**PR:** $PR_URL" >> $GITHUB_STEP_SUMMARY
+          echo "**Files:** $UPDATED_FILES" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** \`$BRANCH\`" >> $GITHUB_STEP_SUMMARY
         else
-          echo "[DEBUG][HypF] CLAUDE.md does not exist, skipping"
+          echo "⚠️ No actual changes detected after applying updates"
+          echo "pr_created=false" >> $GITHUB_OUTPUT
+          echo "files_updated=" >> $GITHUB_OUTPUT
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ⚠️ No Changes" >> $GITHUB_STEP_SUMMARY
+          echo "Documentation content matches existing files." >> $GITHUB_STEP_SUMMARY
         fi
 
-        # #region agent log - Hypothesis C: After staging
-        echo "[DEBUG][HypC] After git add, staged files:"
-        git diff --cached --name-only || echo "No staged files"
-        echo "[DEBUG][HypF] Git status after add:"
-        git status --short
-        # #endregion
-
-        # Check if there are changes to commit
-        if git diff --cached --quiet; then
-          echo "No changes to commit after staging"
-          # #region agent log - Hypothesis C: No changes detected
-          echo "[DEBUG][HypC] CRITICAL: git diff --cached --quiet returned TRUE - no staged changes detected!"
-          echo "[DEBUG][HypC] This means the files were NOT modified from the original"
-          # #endregion
-          echo "pr_created=false" >> $GITHUB_OUTPUT
-          exit 0
-        fi
-
-        # #region agent log - Hypothesis C: Changes detected
-        echo "[DEBUG][HypC] Changes detected, proceeding with commit"
-        # #endregion
-
-        # Commit
-        git commit -m "docs: Auto-sync documentation for $COMMIT_SHA"
-
-        # #region agent log - Hypothesis C/D: Push attempt
-        echo "[DEBUG][HypC] Commit successful, attempting push to origin/$BRANCH"
-        # #endregion
-
-        # Push branch
-        git push origin "$BRANCH"
-
-        # #region agent log - Hypothesis D: Push successful
-        echo "[DEBUG][HypD] Push successful"
-        # #endregion
-
-        # Build PR body
-        FILES_LIST=$(echo "$FILES_UPDATED" | tr ',' '\n' | sed 's/^/- /')
-        PR_BODY="## 📚 Automated Documentation Sync"
-        PR_BODY="${PR_BODY}\n\nThis PR was automatically generated to keep documentation in sync with code changes."
-        PR_BODY="${PR_BODY}\n\n### Files Updated\n${FILES_LIST}"
-        PR_BODY="${PR_BODY}\n\n### Analysis by Claude AI (Architect Engineer)\n${REASONING}"
-        PR_BODY="${PR_BODY}\n\n### Triggered By\n- Commit: \`${COMMIT_SHA}\`\n- Original PR: ${PR_URL}"
-        PR_BODY="${PR_BODY}\n\n---\n🤖 *Generated by [doc_sync_agent](https://github.com/${REPOSITORY}/.github/actions/doc_sync_agent) | Powered by Claude AI*"
-
-        # #region agent log - Hypothesis D: PR creation attempt
-        echo "[DEBUG][HypD] Attempting to create PR with gh pr create"
-        echo "[DEBUG][HypD] Base branch: $BASE_BRANCH"
-        echo "[DEBUG][HypD] Head branch: $BRANCH"
-        # #endregion
-
-        # Create PR
-        NEW_PR_URL=$(gh pr create \
-          --title "📚 docs: Auto-sync documentation" \
-          --body "$PR_BODY" \
-          --base "$BASE_BRANCH" \
-          --head "$BRANCH" 2>&1) || {
-          # #region agent log - Hypothesis D: PR creation failed
-          echo "[DEBUG][HypD] CRITICAL: gh pr create FAILED"
-          echo "[DEBUG][HypD] Error output: $NEW_PR_URL"
-          # #endregion
-          echo "Failed to create PR"
-          echo "pr_created=false" >> $GITHUB_OUTPUT
-          exit 1
-        }
-
-        # #region agent log - Hypothesis D: PR created
-        echo "[DEBUG][HypD] gh pr create succeeded"
-        echo "[DEBUG][HypD] NEW_PR_URL='$NEW_PR_URL'"
-        # #endregion
-
-        # Extract PR number from URL
-        PR_NUMBER=$(echo "$NEW_PR_URL" | grep -oE '[0-9]+$' || echo "")
-
-        echo "pr_created=true" >> $GITHUB_OUTPUT
-        echo "pr_url=$NEW_PR_URL" >> $GITHUB_OUTPUT
-        echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
-        echo "branch=$BRANCH" >> $GITHUB_OUTPUT
-
-        echo "## ✅ PR Created" >> $GITHUB_STEP_SUMMARY
-        echo "- PR URL: $NEW_PR_URL" >> $GITHUB_STEP_SUMMARY
-        echo "- PR Number: #$PR_NUMBER" >> $GITHUB_STEP_SUMMARY
-        echo "- Branch: $BRANCH" >> $GITHUB_STEP_SUMMARY
-
-    # Step 7.5: Debug outputs
-    - name: Debug output values
-      if: always()
-      shell: bash
-      run: |
-        # #region agent log - Debug all step outputs
-        echo "======== DEBUG: All Step Outputs ========"
-        echo "[DEBUG] update-files.has_updates = '${{ steps.update-files.outputs.has_updates }}'"
-        echo "[DEBUG] update-files.files_updated = '${{ steps.update-files.outputs.files_updated }}'"
-        echo "[DEBUG] update-files.should_update_readme = '${{ steps.update-files.outputs.should_update_readme }}'"
-        echo "[DEBUG] update-files.should_update_claude_md = '${{ steps.update-files.outputs.should_update_claude_md }}'"
-        echo "[DEBUG] create-pr.pr_created = '${{ steps.create-pr.outputs.pr_created }}'"
-        echo "[DEBUG] create-pr.pr_url = '${{ steps.create-pr.outputs.pr_url }}'"
-        echo "[DEBUG] analyze.api_success = '${{ steps.analyze.outputs.api_success }}'"
-        echo "======== END DEBUG ========"
-        # #endregion
-
-    # Step 8: Send Slack Notification
+    # Step 5: Send Slack notification (if PR was created)
     - name: Send Slack notification
-      if: steps.create-pr.outputs.pr_created == 'true'
+      if: steps.create-pr.outputs.pr_created == 'true' && inputs.slack_webhook_url != ''
       shell: bash
       env:
         SLACK_WEBHOOK_URL: ${{ inputs.slack_webhook_url }}
         SLACK_USERS: ${{ inputs.slack_users_to_tag }}
         REPOSITORY: ${{ inputs.repository }}
-        COMMIT_SHA: ${{ inputs.commit_sha }}
-        PR_CREATED: ${{ steps.create-pr.outputs.pr_created }}
         PR_URL: ${{ steps.create-pr.outputs.pr_url }}
-        HAS_UPDATES: ${{ steps.update-files.outputs.has_updates }}
-        FILES_UPDATED: ${{ steps.update-files.outputs.files_updated }}
-        API_SUCCESS: ${{ steps.analyze.outputs.api_success }}
+        FILES_UPDATED: ${{ steps.create-pr.outputs.files_updated }}
+        REASONING: ${{ steps.analyze.outputs.reasoning }}
       run: |
-        set -e
-
-        echo "Sending Slack notification..."
-
-        # Format Slack user mentions (convert "U123,U456" to "<@U123> <@U456>")
-        FORMATTED_USERS=""
+        # Format user mentions
+        USER_MENTIONS=""
         if [ -n "$SLACK_USERS" ]; then
-          FORMATTED_USERS=$(echo "$SLACK_USERS" | tr ',' '\n' | sed 's/^/<@/' | sed 's/$/>/' | tr '\n' ' ')
+          USER_MENTIONS=$(echo "$SLACK_USERS" | tr ',' '\n' | sed 's/^/<@/' | sed 's/$/>/' | tr '\n' ' ')
         fi
-
-        # Read reasoning
-        REASONING=$(cat /tmp/claude_decision.json 2>/dev/null | jq -r '.reasoning' || echo "N/A")
-
-        # Build Slack message for PR created
-        SLACK_MESSAGE=$(jq -n \
+        
+        # Build Slack message
+        SLACK_PAYLOAD=$(jq -n \
+          --arg mentions "$USER_MENTIONS" \
           --arg repo "$REPOSITORY" \
           --arg pr_url "$PR_URL" \
           --arg files "$FILES_UPDATED" \
-          --arg commit "$COMMIT_SHA" \
           --arg reasoning "$REASONING" \
-          --arg users "$FORMATTED_USERS" \
           '{
             "blocks": [
               {
                 "type": "section",
                 "text": {
                   "type": "mrkdwn",
-                  "text": (if $users != "" then "\($users)\n" else "" end) + "📚 *Documentation Sync PR Created*\n<\($pr_url)|View PR> in `\($repo)`"
+                  "text": (if $mentions != "" then $mentions + "\n" else "" end) + "📚 *DocSync AI: Documentation Update Ready for Review*"
                 }
-              },
-              {
-                "type": "section",
-                "fields": [
-                  {
-                    "type": "mrkdwn",
-                    "text": "*Files Updated:*\n\($files)"
-                  },
-                  {
-                    "type": "mrkdwn",
-                    "text": "*Commit:*\n`\($commit)`"
-                  }
-                ]
               },
               {
                 "type": "section",
                 "text": {
                   "type": "mrkdwn",
+                  "text": "*Repository:* `\($repo)`\n*Files Updated:* \($files)\n\n<\($pr_url)|View Pull Request>"
+                }
+              },
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn", 
                   "text": "*Reasoning:*\n\($reasoning)"
                 }
               },
               {
                 "type": "context",
-                "elements": [{
-                  "type": "mrkdwn",
-                  "text": "🤖 doc_sync_agent | Powered by Claude AI"
-                }]
+                "elements": [{"type": "mrkdwn", "text": "🤖 DocSync AI | Powered by Claude"}]
               }
             ]
           }')
-
-        # Send to Slack
-        curl -X POST "$SLACK_WEBHOOK_URL" \
+        
+        curl -s -X POST "$SLACK_WEBHOOK_URL" \
           -H "Content-Type: application/json" \
-          -d "$SLACK_MESSAGE" || {
-          echo "Warning: Failed to send Slack notification"
-        }
+          -d "$SLACK_PAYLOAD" || echo "⚠️ Slack notification failed"
+        
+        echo "📨 Slack notification sent"
 
-        echo "Slack notification sent"
-
-    # Step 9: Finalize and Set Status
-    - name: Finalize
+    # Step 6: Set final status
+    - name: Set final status
       id: finalize
       if: always()
       shell: bash
       run: |
         if [ "${{ steps.create-pr.outputs.pr_created }}" = "true" ]; then
           echo "status=success" >> $GITHUB_OUTPUT
-        elif [ "${{ steps.update-files.outputs.has_updates }}" = "false" ]; then
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "**Status:** ✅ Success - Documentation PR created" >> $GITHUB_STEP_SUMMARY
+        elif [ "${{ steps.analyze.outputs.update_readme }}" = "false" ] && [ "${{ steps.analyze.outputs.update_claude_md }}" = "false" ]; then
           echo "status=skipped" >> $GITHUB_OUTPUT
-        elif [ "${{ steps.analyze.outputs.api_success }}" = "false" ]; then
-          echo "status=failed" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "**Status:** ⏭️ Skipped - No documentation updates needed" >> $GITHUB_STEP_SUMMARY
+        elif [ "${{ steps.analyze.outputs.success }}" = "false" ]; then
+          echo "status=error" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "**Status:** ❌ Error - Analysis failed" >> $GITHUB_STEP_SUMMARY
         else
-          echo "status=failed" >> $GITHUB_OUTPUT
+          echo "status=skipped" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "**Status:** ⏭️ Skipped - No changes required" >> $GITHUB_STEP_SUMMARY
         fi

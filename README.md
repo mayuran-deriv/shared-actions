@@ -12,3 +12,25 @@ This repository is dedicated to hosting reusable GitHub Actions YAML files that 
           issue_number: ${{steps.pr_information.outputs.issue_number}}
           head_sha: ${{github.event.workflow_run.head_sha}}
 ```
+
+#### Available Actions
+
+##### Schema Validator
+
+A comprehensive data validation library for Python with support for nested objects, custom validators, and detailed error reporting.
+
+```python
+from schema_validator import Schema, StringValidator, IntegerValidator, EmailValidator
+
+user_schema = Schema({
+    "username": StringValidator(min_length=3, max_length=50),
+    "email": EmailValidator(),
+    "age": IntegerValidator(minimum=0, maximum=150, required=False)
+})
+
+result = user_schema.validate({"username": "john_doe", "email": "john@example.com", "age": 30})
+if result.is_valid:
+    print("Valid data:", result.validated_data)
+else:
+    print("Validation errors:", result.errors)
+```

@@ -47,14 +47,7 @@ outputs:
 runs:
   using: 'composite'
   steps:
-    # Step 1: Checkout Repository
-    - name: 🔍 Checkout repository
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 50
-        token: ${{ inputs.github_token }}
-
-    # Step 2: Detect and Validate PR Merge
+    # Step 1: Detect and Validate PR Merge
     - name: 🎯 Detect and validate PR merge to master
       id: pr-validation
       shell: bash
@@ -119,7 +112,7 @@ runs:
         echo "- **Merged to:** \`$PR_BASE\`" >> $GITHUB_STEP_SUMMARY
         echo "- **Commit:** \`$COMMIT_SHA\`" >> $GITHUB_STEP_SUMMARY
 
-    # Step 3: Check for Existing Documentation Files
+    # Step 2: Check for Existing Documentation Files
     - name: 📄 Check existing documentation files
       id: check-docs
       if: steps.pr-validation.outputs.is_pr_merge == 'true'
@@ -178,7 +171,7 @@ runs:
           echo "- ❌ CLAUDE.md does not exist" >> $GITHUB_STEP_SUMMARY
         fi
 
-    # Step 4: Generate Code Diff
+    # Step 3: Generate Code Diff
     - name: 🔄 Generate code diff from PR merge
       id: diff-context
       if: steps.check-docs.outputs.has_docs == 'true'
@@ -226,7 +219,7 @@ runs:
         echo "- **Files changed:** $CHANGED_FILES" >> $GITHUB_STEP_SUMMARY
         echo "- **Diff lines:** $(echo "$FILTERED_DIFF" | wc -l) lines" >> $GITHUB_STEP_SUMMARY
 
-    # Step 5: Read Current Documentation
+    # Step 4: Read Current Documentation
     - name: 📖 Read current documentation
       id: read-docs
       if: steps.check-docs.outputs.has_docs == 'true'
@@ -546,6 +539,14 @@ runs:
         echo "Updated files: $UPDATED_FILES"
         echo ""
 
+        # Debug: Check git status
+        echo "🔍 Git status after file updates:"
+        git status --short
+        echo ""
+        echo "🔍 Git diff summary:"
+        git diff --stat
+        echo ""
+
         echo "## 📝 Files Updated" >> $GITHUB_STEP_SUMMARY
         echo "**Files:** $UPDATED_FILES" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
@@ -570,6 +571,14 @@ runs:
         echo "🎯 CREATING PULL REQUEST"
         echo "================================================"
 
+        # Debug: Check git status BEFORE creating branch
+        echo "🔍 Git status before creating branch:"
+        git status --short
+        echo ""
+        echo "🔍 Git diff before creating branch:"
+        git diff --name-only
+        echo ""
+
         # Configure git
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -578,6 +587,11 @@ runs:
         BRANCH="docs/auto-sync-$(date +%Y%m%d-%H%M%S)"
         echo "📌 Creating branch: $BRANCH"
         git checkout -b "$BRANCH"
+
+        # Debug: Check git status AFTER creating branch
+        echo "🔍 Git status after creating branch:"
+        git status --short
+        echo ""
 
         # Get reasoning from previous step
         REASONING=$(cat /tmp/claude_decision.json | jq -r '.reasoning')

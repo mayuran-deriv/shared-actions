@@ -189,16 +189,11 @@ runs:
 
         Your role is to analyze code changes and determine if project documentation needs to be updated. You make intelligent decisions about what warrants documentation updates and generate high-quality content when needed.
 
-        CRITICAL: Be conservative with updates. Documentation should ONLY be updated for significant, user-facing changes. DO NOT update documentation for:
-        - Minor bug fixes that don't change functionality
-        - Small UI tweaks (styling, colors, spacing)
-        - Internal code refactoring
-        - Dependency version bumps
-        - Code formatting or linting changes
-        - Internal variable/function renames
-        - Performance optimizations that don't affect usage
-
-        Only update when changes genuinely impact how users understand or interact with the project."
+        GUIDELINES FOR UPDATES:
+        - UPDATE documentation when changes affect: new features, API changes, configuration options, setup instructions, usage patterns, or significant workflow changes
+        - SKIP updates for: minor bug fixes, typo corrections, code formatting, internal refactoring that doesn't change behavior, test-only changes
+        
+        When in doubt, lean toward updating if the change would help users understand or use the project better."
 
         # Build user prompt
         USER_PROMPT="Repository: $REPOSITORY
@@ -246,22 +241,16 @@ runs:
         }
 
         ## Important Guidelines
-        - BE CONSERVATIVE: Only update documentation for significant, user-facing changes
         - Preserve existing formatting style and structure exactly
-        - If files don't exist, only create them if changes strongly warrant documentation
+        - If files don't exist, create them if the project would benefit from documentation
         - Generate complete file content, not partial updates or diffs
-
-        ## DO NOT Update Documentation For:
-        - Minor bug fixes (unless they fix critical user-facing issues)
-        - Small UI changes (button colors, spacing, font sizes, styling tweaks)
-        - Internal code refactoring or reorganization
-        - Dependency version bumps (unless they require user action)
-        - Code formatting, linting, or style changes
-        - Internal variable/function/class renames
-        - Performance optimizations that don't affect how users interact
-        - Test file changes or test coverage improvements
-        - CI/CD configuration changes
-        - Development tooling updates"
+        - Focus on making documentation accurate and helpful for users
+        
+        ## SKIP Documentation Updates For:
+        - Pure bug fixes that don't change documented behavior
+        - Code formatting or style changes
+        - Internal refactoring with no external impact
+        - Test file changes only"
 
         # Call Claude API with timeout
         echo "Calling Claude API..."
@@ -303,6 +292,13 @@ runs:
         echo "$CLAUDE_DECISION" > /tmp/claude_decision.json
 
         echo "api_success=true" >> $GITHUB_OUTPUT
+        
+        # #region agent log - Hypothesis E: Log Claude's full decision
+        echo "[DEBUG][HypE] Claude's full decision:"
+        cat /tmp/claude_decision.json
+        echo ""
+        # #endregion
+        
         echo "## Claude AI Analysis Complete" >> $GITHUB_STEP_SUMMARY
 
     # Step 6: Parse Decision & Update Files

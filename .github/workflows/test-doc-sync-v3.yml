@@ -22,6 +22,12 @@ jobs:
       pull-requests: write
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 50
+
       - name: Run Doc Sync Agent v3
         id: doc-sync
         uses: ./.github/actions/doc_sync_agent_v3

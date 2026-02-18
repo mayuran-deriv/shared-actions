@@ -12,3 +12,13 @@ This repository is dedicated to hosting reusable GitHub Actions YAML files that 
           issue_number: ${{steps.pr_information.outputs.issue_number}}
           head_sha: ${{github.event.workflow_run.head_sha}}
 ```
+
+### Schema Validator
+
+A comprehensive data validation library for Python with support for nested objects, custom validators, and detailed error reporting.
+
+#### Features
+- Type validation (strings, integers, emails, etc.)
+- Nested object validation
+- Custom validation rules
+- Detailed error reporting
